@@ -1,124 +1,90 @@
-# Table of Contents
-- [Code Usage](https://github.com/joaomigl15/spdisaggregation/blob/main/README.md#code-usage)
-- [Disaggregated Results](https://github.com/joaomigl15/spdisaggregation/blob/main/README.md#disaggregated-results)
-- [Datasets](https://github.com/joaomigl15/spdisaggregation/blob/main/README.md#datasets)
-- [Contact](https://github.com/joaomigl15/spdisaggregation/blob/main/README.md#contact)
-- [Citation](https://github.com/joaomigl15/spdisaggregation/blob/main/README.md#citation)
-- [Acknowledgements](https://github.com/joaomigl15/spdisaggregation/blob/main/README.md#acknowledgements)
+# Overview
 
-# Spatial Disaggregation
-This branch contains a self-training approach to the spatial disaggregation task. The different steps are as follows.
-1. Produce a vector polygon layer for the aggregated information, by associating the source counts of the variable that is to be disaggregated with the corresponding regions;
-2. Compute initial estimates using a simple disaggregation heuristic, such as pycnophylactic interpolation or dasymetric mapping proportional to population density, from the layer with source region counts produced in Step 1;
-3. Train a regression model to infer the results from Step 2 from the ancillary information available as gridded rasters. After training, the regression model is used to produce new disaggregated values, refining the original estimates;
-4. Regardless of the regression model being used, the new estimates are adjusted to preserve the mass at the level of source zones;
-5. Steps 3 and 4 are repeated until reaching a maximum number of iterations, or until some other stopping criteria are met.
+This repository is a refactor of [spdisaggregation](https://github.com/joaomigl15/spdisaggregation), adapted for water use statistics and reorganized into a single pipeline driven by [main.py](./main.py). The pipeline spatially disaggregates coarse water use statistics, reported as totals per Hydrologic Unit Code (HUC) watershed, into fine-resolution (1000m by default) gridded estimates across the conterminous United States. Reported HUC totals are redistributed in three stages: dasymetric mapping against an ancillary weighting layer, pycnophylactic smoothing, and iterative refinement with an alternating U-Net convolutional neural network and random forest trained on ancillary land cover, socioeconomic, and climate predictors. Every stage preserves mass: the cells within each HUC always sum to that HUC's reported total, with a rescaling step after each refinement iteration.
 
-The method can also be applied to the co-training of two regression algorithms. In this case, the adapted step 3 is as follows.
-- In odd iterations, regression model 1 uses the estimates produced by model 2 (or the initial estimates from the disaggregation heuristic, in case it is the first iteration) as the regression target, and produces refined estimates. In even iterations, regression model 2 instead leverages the estimates from model 1 as the regression target, and produces refined estimates;
+# Setup
 
-# Code Usage
-The disaggregation method relies on a regression model to combine the ancillary data and produce disaggregation estimates. The entire procedure was implemented in the Python language, using the frameworks [scikit-learn](http://scikit-learn.org) and [Tensorflow](http://www.tensorflow.org).
+[conda](https://docs.conda.io/projects/conda/en/latest/user-guide/install/) is recommended for package/environment management.
 
+> If you are working in an environment without direct GPU access, you must set the `CONDA_OVERRIDE_CUDA` environment variable to `12.9` BEFORE installing Tensorflow, in order to force CUDA compatibility.
 
-## Spatial Disaggregation
+From the repository root, run `conda env create -f environment.yaml` to create the `WATER_DISAGGREGATION` environment with all required packages, and `conda activate WATER_DISAGGREGATION` to activate it.
 
-This file '/code/runDisaggregation_Withdrawals.py' controls the self-training approach for each experiment. In this file, the following parameters need to be defined.
-- indicator - The ID of the variable to be disaggregated, default='Withdrawals'
-- admboundary2 = The source administrative regions, default='NUTSIII'
-  - Other options: 'MUNICIP' (municipalities) and 'CPARISH' (civil parishes)
-- methodopts = The regression models to be used in co-training, default=['apcnn', 'aprf']
-  - Each method must start with 'ap'
-  - Other options: 'lm' (linear model), 'sgdregressor' (SGD Regressor), 'xgbtree' (XGBoost), ['ap1cnn', 'ap2cnn'] (co-training with 2 UNets differing in their initializations)
-  - Training with a single model can be performed by setting the same model in the two positions
-- cnnmodelopts = The CNN model to be used, default='unet'
-  - Other options: 'cnnlm' (a linear model), 'lenet' (LeNet5), 'vgg' (VGG), 'uenc' (encoder of UNet), 'unetplusplus' (UNet++)
-- epochspiopts = The number of epochs of the CNN to train at each iteration, default=3
-- ymethodopts = The heuristic to be used as initial estimates, default='smoothtd'
-  - Other options: 'td' (weighted interpolation), 'massp' (mass-preserving areal weighting), 'pycno' (pycnophylactic interpolation)
-- resetwopts = Whether or not to reset the weights of CNN and optimizer and each iteration, default=False
+## Folder Structure
 
-The execution of the script produces one .tif file, containing the disaggregated results for the study region, concerning each iteration of the algorithm.
+Ancillary datasets are generally organized as `input/{DATASET}/{year}/` if there is more than 1 file per year. If there is only 1 file per year, they can be found in `input/{DATASET}/`.
 
-To run the disaggregation algorithm, for the amount of withdrawals in ATMs:
-```
-chmod +x disaggregate_withdrawals.sh
-./disaggregate_withdrawals.sh
-```
+Outputs are placed in `output/huc{huc_level}/{case_study}/{year}/{case_study}_huc{huc_level}_{year}.tif` in million gallons per day per cell. Each case study's yearly metrics are in `output/huc{huc_level}/{case_study}/metrics.csv`.
 
-## Dasymetric Mapping
-To run dasymetric mapping with basis on population distribution, for the amount of withdrawals in ATMs:
-```
-chmod +x dasymapping_withdrawals.sh
-./dasymapping_withdrawals.sh
+# Workflow
+
+> Steps 0-4 are CPU-only, and may trip GPU-idle watchdogs.
+
+0. Download any necessary datasets and [generate the template raster](./utilities/generate_template_raster.py).
+1. Associate per-HUC water use statistics with HUC boundary polygons. [[1]](./utilities/merge_irr_statistics.py)[[2]](./utilities/merge_pws_statistics.py)[[3]](./utilities/merge_pwscu_statistics.py)
+2. Generate relevant ancillary dataset rasters. [[1]](./utilities/generate_irr_rasters.py)[[2]](./utilities/generate_pws_rasters.py)
+3. Compute initial estimates with [dasymetric mapping](./dasymetric_mapping.py).
+4. Smooth initial estimates with [pycnophylactic interpolation](./pycnophylactic_interpolation.py).
+5. Iteratively refine initial estimates using the [disaggregation](./disaggregation.py) regression model.
+6. [Evaluate](./evaluation.py) results by comparing predicted HUC totals with actuals.
+7. [Render](./utilities/figure_utilities.py) the disaggregated raster to `output/huc{huc_level}/{case_study}/{year}/{case_study}_huc{huc_level}_{year}.png`.
+
+The [main.py](./main.py) orchestrator script can be invoked as follows:
+
+```text
+usage: main.py [-h] [--case_study {irr,pws-cu,pws-gw,pws-sw,pws-tot}] [--year YEAR] [--huc2s HUC2S [HUC2S ...]] [--huc_level {2,4,6,8,10,12,14,16}] [--crs CRS] [--cell_size CELL_SIZE] [--bottom_panel_huc2s [BOTTOM_PANEL_HUC2S ...]]
+
+options:
+  -h, --help            show this help message and exit
+  --case_study {irr,pws-cu,pws-gw,pws-sw,pws-tot}
+                        The case study to run, determines input statistics and ancillary data layers.
+  --year YEAR           The year that determines statistics and ancillary data layers.
+  --huc2s HUC2S [HUC2S ...]
+                        The HUC-2 watersheds used for all spatial operations and calculations.
+  --huc_level {2,4,6,8,10,12,14,16}
+                        The HUC scale used for statistics, initial estimates and spatial disaggregation.
+  --crs CRS             The coordinate reference system used in all spatial operations.
+  --cell_size CELL_SIZE
+                        The desired output cell size (in CRS units).
+  --bottom_panel_huc2s [BOTTOM_PANEL_HUC2S ...]
+                        The HUC-2 watersheds shown in the figure's bottom panel, any subset of --huc2s; pass none to omit it.
 ```
 
-## Pycnophylactic Interpolation
-To run the pycnophylactic interpolation, for the amount of withdrawals in ATMs:
-```
-chmod +x pycno_withdrawals.sh
-./pycno_withdrawals.sh
-```
+Example:
 
-## Evaluation of Results
-To evaluate results from .tif files available in '/results/Withdrawals/2Evaluate' at the level of intermediary regions, and using the pre-instaled QGis application, run:
-```
-cd code/evaluation
-qgis -nologo --code zstats.py
-screen -L -Logfile ev.txt -S evaluate
-python3 evaluateResults.py
-exit
-python3 processEvaluation.py
+```sh
+python main.py --case_study pws-cu --year 2009 --huc2s 14 15 --huc_level 12 --crs EPSG:5070 --cell_size 1000
 ```
 
+# Datasets Used
 
-# Disaggregated Results
-The .tif files containing the disaggregated results reported in our study are available in:
-- Baseline corresponding to smooth weighted interpolation - /results/Withdrawals/Baselines/smoothtd_200m.tif
-- Self-training with random forests - /results/Withdrawals/Self-Training/Random Forests
-- Self-training with the CNN - /results/Withdrawals/Self-Training/UNet
-- Co-training with random forests and CNN - /results/Withdrawals/Co-Training/Target Smooth Td
+## Boundaries
 
-Extra:
-- Baseline corresponding to mass-preserving areal weighting - /results/Withdrawals/Baselines/massp_200m.tif
-- Baseline corresponding to pycnophylactic interpolation - /results/Withdrawals/Baselines/pycno_200m.tif
-- Baseline corresponding to weighted interpolation - /results/Withdrawals/Baselines/td_200m.tif
-- Co-training with two CNNs differing in their initializations - /results/Withdrawals/Co-Training 1UNet 2UNet
-- Ensembling of random forests and CNN - /results/Withdrawals/Co-Training Baselines/50Unet 50RF
-- Co-training with random forests and CNN, with target as random forests 10It - /results/Withdrawals/Co-Training/Target RF 10It
-- Co-training with random forests and CNN, with target as random forests 30It - /results/Withdrawals/Co-Training/Target RF 30It
-- Co-training with random forests and CNN, with MSE as loss - /results/Withdrawals/Co-Training w Robust Losses/RMSE
-- Co-training with random forests and CNN, with robust loss - /results/Withdrawals/Co-Training w Robust Losses/Adaptive
+- [Watershed Boundary Dataset](https://www.usgs.gov/national-hydrography/watershed-boundary-dataset)
 
-# Datasets
+## Water Use Statistics
 
+- [Irrigation](https://www.sciencebase.gov/catalog/item/639a11b9d34e0de3a1f0ddde) (irr, 2000-2020)
+- [Public Water Supply](https://www.sciencebase.gov/catalog/item/65f86970d34e97daac9ff4c8) (pws-[gw|sw|tot], 2000-2020)
+- [Public Water Supply (Consumptive)](https://www.sciencebase.gov/catalog/item/65f869add34e97daac9ff4d2) (pws-cu, 2009-2020)
 
-## Ancillary Data
-Ancillary layers are required at the target resolution to guide the procedure. Each dataset is normalized to the target resolution, through averaging/summing cells in the cases where the original raster had a higher resolution, or through bicubic interpolation in the cases where the original raster had a lower resolution. The links for the ancillary data that we used in our study are provided next, although any dataset can be leveraged. The normalized datasets at a resolution of 200 meters are available in '/rasters/Withdrawals'.
-- [GHSL Population grid - ghspg](https://ghsl.jrc.ec.europa.eu/)
-- [GHSL Terrain development layer - bua](https://ghsl.jrc.ec.europa.eu/)
-- [Copernicus Land cover layer - lc](https://land.copernicus.eu/pan-european)
-- [Copernicus Human settlements layer - hs](https://land.copernicus.eu/pan-european)
-- [VIIRS Nighttime lights layer - nl](http://gis.ngdc.noaa.gov/arcgis/rest/services/NPP_VIIRS_DNB)
+## Ancillary Inputs
 
-## Shapefiles
-The shapefiles containing the polygons for source and evaluation zones are available in:
-- Source zones (NUTS III regions) - /shapefiles/Withdrawals/NUTSIII.shp
-- Evaluation zones (municipalities) - /shapefiles/Withdrawals/MUNICIP.shp
-
-
-## Aggregated Statistics
-The csv files containing the aggregated statistics for source and evaluation zones are available in:
-- Source zones (NUTS III regions) - /statistics/Withdrawals/NUTSIII.csv
-- Evaluation zones (municipalities) - /statistics/Withdrawals/MUNICIP.csv
-
-
-# Contact
-João Monteiro - joao.miguel.monteiro@tecnico.ulisboa.pt
+- [USDA Cropland Data Layer](https://www.nass.usda.gov/Research_and_Science/Cropland/SARS1a.php) (CDL)
+- [DARTE On-road CO2 Emissions](https://data.nasa.gov/dataset/darte-annual-on-road-co2-emissions-on-a-1-km-grid-conterminous-usa-v2-1980-2017-4d5f4) (DARTE)
+- [Gross Domestic Product](https://www.nature.com/articles/s41597-022-01322-5#code-availability) (GDP)
+- [Terrain Slope](https://www.landfire.gov/topographic/slope) (LandFire)
+- [MRLC Land Cover](https://www.mrlc.gov/data) (NLCD)
+- [Precipitation](https://prism.oregonstate.edu/data/) (PRISM)
+- [WorldPop Population Counts](https://hub.worldpop.org/geodata/listing?id=74) (WorldPop)
+- [Public-Supply Water Service Areas](https://www.sciencebase.gov/catalog/item/608035dcd34e8564d6835790) (WSA_v1)
 
 # Citation
-If you use this algorithm in your research or applications, please cite:
-Monteiro, J., Martins, B., Costa, M., & Pires, J. M. (2021). Geospatial Data Disaggregation through Self-Trained Encoder–Decoder Convolutional Models. ISPRS International Journal of Geo-Information, 10(9), 619.
 
-# Acknowledgements
-We gratefully acknowledge the support of NVIDIA Corporation, with the donation of the two Titan Xp GPUs used in our experiments. This work was also partially supported by Thales Portugal, through the Ph.D. scholarship of João Monteiro, by the EU H2020 research and innovation program, through the MOOD project corresponding to the grant agreement No. 874850, and by the Fundação para a Ciência e Tecnologia (FCT), under the MIMU project with reference PTDC/CCI-CIF/32607/2017 and also under the INESC-ID multi-annual funding (UIDB/50021/2020).
+This pipeline builds on the self-training disaggregation method from [spdisaggregation](https://github.com/joaomigl15/spdisaggregation). If you use it, please cite:
+
+> Monteiro, J., Martins, B., Costa, M., & Pires, J. M. (2021). Geospatial Data Disaggregation through Self-Trained Encoder–Decoder Convolutional Models. _ISPRS International Journal of Geo-Information_, 10(9), 619. https://doi.org/10.3390/ijgi10090619
+
+# License
+
+Pending
