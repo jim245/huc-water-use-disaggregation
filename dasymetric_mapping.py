@@ -25,8 +25,9 @@ def run(
 
     Each HUC's total is spread over its cells in proportion to the weight layer: cell = total * a_cell / sum(a_HUC).
     Cells are NaN outside all HUCs, where the weight layer is nodata, in HUCs without statistics, and in HUCs whose
-    weights sum to 0 (that HUC's total is dropped). The output is written to
-    output/huc<huc_level>/<case_study>/<year>/dasymetric-mapping.tif and read back instead if it already exists.
+    weights sum to 0 (that HUC's total is dropped). Each run recomputes the output and writes it to
+    output/huc<huc_level>/<case_study>/<year>/dasymetric-mapping.tif. The stage doesn't reuse an existing file, because
+    the file can't show which statistics and weights made it, and the recomputation takes seconds.
 
     Parameters:
         weights (numpy_typing.NDArray[numpy.float32]): The weight layer (the first prepared raster), NaN as nodata.
@@ -46,9 +47,6 @@ def run(
     os.makedirs(output_directory, exist_ok=True)
 
     dasymetric_raster_path = path.join(output_directory, "dasymetric-mapping.tif")
-
-    if path.exists(dasymetric_raster_path):
-        return raster_utilities.read_raster(dasymetric_raster_path, grid)
 
     zone_count = len(zone_totals)
 
