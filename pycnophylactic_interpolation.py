@@ -32,8 +32,9 @@ def run(
       2. If a support raster is given, zero cells that can't receive water.
       3. HUCs left with nothing fall back to their dasymetric values (unsmoothed), so step 4 can preserve their total.
       4. Rescale each HUC so its cells sum to its known total.
-    The output is written to output/huc<huc_level>/<case_study>/<year>/pycnophylactic-interpolation.tif and read back
-    instead if it already exists.
+    Each run recomputes the output and writes it to
+    output/huc<huc_level>/<case_study>/<year>/pycnophylactic-interpolation.tif. The stage doesn't reuse an existing
+    file, because the file can't show which inputs made it, and the recomputation takes seconds.
 
     Parameters:
         dasymetric_raster (numpy_typing.NDArray[numpy.float32]): The dasymetric initial estimates.
@@ -58,9 +59,6 @@ def run(
     pycnophylactic_raster_path = path.join(
         output_directory, "pycnophylactic-interpolation.tif"
     )
-
-    if path.exists(pycnophylactic_raster_path):
-        return raster_utilities.read_raster(pycnophylactic_raster_path, grid)
 
     dasymetric_data = dasymetric_raster.astype(numpy.float32)
     zone_count = len(zone_totals)
