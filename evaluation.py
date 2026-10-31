@@ -3,15 +3,17 @@ Evaluates disaggregated rasters against aggregated original totals.
 
 The disaggregated raster is summed over each HUC and compared with that HUC's water use statistic. Disaggregation
 rescales every iteration to the totals at its own HUC level, and run() scores at that same level, so its scores are
-close to perfect by construction. They show that totals are preserved, not how well water is placed within each HUC;
-that needs scoring at a finer level (e.g. HUC-12 for a HUC-8 run; see FIXES.md, "HUC-12 accuracy of the final
-product").
+close to perfect by construction. They show that totals are preserved, not how well water is placed within each HUC.
+
+score_holdout measures placement. A run below HUC-12 never sees the HUC-12 totals, so its HUC-12 sums are an
+out-of-sample test. The score covers one step of detail, for example HUC-8 to HUC-12. It is a proxy, and it doesn't
+measure the cell error of a HUC-12 run, because no reference data exists at the cell level.
 """
 
 import argparse
 import os
 from os import path
-from typing import cast
+from typing import Optional, cast
 
 import geopandas
 import numpy
@@ -75,16 +77,12 @@ def compute_zonal_sums(
     return predicted_values
 
 
-def evaluate_zonal_sums(
-    actual_values: geopandas.GeoDataFrame,
-    predicted_zonal_sums: pandas.DataFrame,
-    huc_level: int,
-    case_study: str,
-    year: int,
+def compute_metrics(
+    actual: numpy_typing.NDArray[numpy.float64],
+    predicted: numpy_typing.NDArray[numpy.float64],
 ) -> dict[str, float]:
     """
-    Calculate metrics from actual and predicted zonal sum values, and write the per-HUC comparison to
-    output/huc<huc_level>/<case_study>/<year>/ as comparison.csv and comparison.gpkg.
+    Calculate metrics from actual and predicted per-HUC values.
 
     NRMSE and NMAE are normalized by the range (max - min) of the actual values. HUCs where either value is NaN are
     left out of the metrics.
@@ -95,30 +93,13 @@ def evaluate_zonal_sums(
     a prediction.
 
     Parameters:
-        actual_values (geopandas.GeoDataFrame): The actual zonal sum values, with the HUC polygons.
-        predicted_zonal_sums (pandas.DataFrame): The predicted zonal sum values, without geometry.
-        huc_level (int): The HUC level to use for zones.
-        case_study (str): The case study to evaluate.
-        year (int): The year to evaluate.
+        actual (numpy_typing.NDArray[numpy.float64]): The actual value of each HUC.
+        predicted (numpy_typing.NDArray[numpy.float64]): The predicted value of each HUC, in the same order.
 
     Returns:
-        metrics (dict[str, float]): The year's RMSE, MAE, NRMSE, NMAE, R2, Unpredicted_HUCs, Unpredicted_mgd,
-            Missing_mgd and Missing_pct.
+        metrics (dict[str, float]): The RMSE, MAE, NRMSE, NMAE, R2, Unpredicted_HUCs, Unpredicted_mgd, Missing_mgd and
+            Missing_pct.
     """
-
-    # only actual_values carries geometry, so the comparison holds a single copy of the polygons
-    comparison = actual_values.merge(
-        predicted_zonal_sums,
-        on=f"huc{huc_level}",
-        suffixes=("_actual", "_predicted"),
-    )
-
-    actual = cast(
-        numpy_typing.NDArray[numpy.float32], comparison["water_mgd_actual"].values
-    )
-    predicted = cast(
-        numpy_typing.NDArray[numpy.float32], comparison["water_mgd_predicted"].values
-    )
 
     # water the map never places: HUCs without valid predicted cells, and the overall shortfall
     unpredicted = numpy.isnan(predicted) & (actual > 0)
@@ -140,17 +121,83 @@ def evaluate_zonal_sums(
     nmae = mean_absolute_error / rng if rng != 0 else numpy.nan
     r2 = metrics.r2_score(actual, predicted)
 
-    print(f"RMSE  : {root_mean_squared_error:.4f}")
-    print(f"MAE   : {mean_absolute_error:.4f}")
-    print(f"NRMSE : {nrmse:.4f}")
-    print(f"NMAE  : {nmae:.4f}")
-    print(f"R^2   : {r2:.4f}")
-    print(
-        f"Unpredicted : {unpredicted_hucs} HUCs with water, {unpredicted_mgd:.4f} mgd"
-    )
-    print(f"Missing     : {missing_mgd:.4f} mgd ({missing_pct:.4f}% of actual)")
+    return {
+        "RMSE": float(root_mean_squared_error),
+        "MAE": float(mean_absolute_error),
+        "NRMSE": float(nrmse),
+        "NMAE": float(nmae),
+        "R2": float(r2),
+        "Unpredicted_HUCs": float(unpredicted_hucs),
+        "Unpredicted_mgd": unpredicted_mgd,
+        "Missing_mgd": missing_mgd,
+        "Missing_pct": float(missing_pct),
+    }
 
-    output_directory = path.join("output", f"huc{huc_level}", case_study, str(year))
+
+def evaluate_zonal_sums(
+    actual_values: geopandas.GeoDataFrame,
+    predicted_zonal_sums: pandas.DataFrame,
+    huc_level: int,
+    case_study: str,
+    year: int,
+    run_huc_level: Optional[int] = None,
+    comparison_name: str = "comparison",
+) -> dict[str, float]:
+    """
+    Calculate metrics from actual and predicted zonal sum values (see compute_metrics), and write the per-HUC
+    comparison to output/huc<run_huc_level>/<case_study>/<year>/ as <comparison_name>.csv and <comparison_name>.gpkg.
+
+    Parameters:
+        actual_values (geopandas.GeoDataFrame): The actual zonal sum values, with the HUC polygons.
+        predicted_zonal_sums (pandas.DataFrame): The predicted zonal sum values, without geometry.
+        huc_level (int): The HUC level to use for zones.
+        case_study (str): The case study to evaluate.
+        year (int): The year to evaluate.
+        run_huc_level (Optional[int] = None): The HUC level of the run, which selects the output directory. Equal to
+            huc_level when None.
+        comparison_name (str = "comparison"): The name of the comparison files.
+
+    Returns:
+        metrics (dict[str, float]): The year's metrics (see compute_metrics).
+    """
+
+    # only actual_values carries geometry, so the comparison holds a single copy of the polygons
+    comparison = actual_values.merge(
+        predicted_zonal_sums,
+        on=f"huc{huc_level}",
+        suffixes=("_actual", "_predicted"),
+    )
+
+    year_metrics = compute_metrics(
+        cast(
+            numpy_typing.NDArray[numpy.float64], comparison["water_mgd_actual"].values
+        ),
+        cast(
+            numpy_typing.NDArray[numpy.float64],
+            comparison["water_mgd_predicted"].values,
+        ),
+    )
+
+    print(f"RMSE  : {year_metrics['RMSE']:.4f}")
+    print(f"MAE   : {year_metrics['MAE']:.4f}")
+    print(f"NRMSE : {year_metrics['NRMSE']:.4f}")
+    print(f"NMAE  : {year_metrics['NMAE']:.4f}")
+    print(f"R^2   : {year_metrics['R2']:.4f}")
+    print(
+        f"Unpredicted : {int(year_metrics['Unpredicted_HUCs'])} HUCs with water, "
+        f"{year_metrics['Unpredicted_mgd']:.4f} mgd"
+    )
+    print(
+        f"Missing     : {year_metrics['Missing_mgd']:.4f} mgd "
+        f"({year_metrics['Missing_pct']:.4f}% of actual)"
+    )
+
+    output_directory = path.join(
+        "output",
+        f"huc{huc_level if run_huc_level is None else run_huc_level}",
+        case_study,
+        str(year),
+    )
 
     # False for HUCs with no valid predicted cells, so they can be mapped
     comparison["predicted"] = comparison["water_mgd_predicted"].notna()
@@ -175,40 +222,35 @@ def evaluate_zonal_sums(
 
     # geometry and ratio are left out of the CSV (geometry was ~1 GB of WKT text); both are in the gpkg below
     comparison.drop(columns=["geometry", "ratio"]).to_csv(
-        path.join(output_directory, "comparison.csv"),
+        path.join(output_directory, f"{comparison_name}.csv"),
         index=False,
     )
 
-    comparison.to_file(path.join(output_directory, "comparison.gpkg"))
+    comparison.to_file(path.join(output_directory, f"{comparison_name}.gpkg"))
 
-    return {
-        "RMSE": float(root_mean_squared_error),
-        "MAE": float(mean_absolute_error),
-        "NRMSE": float(nrmse),
-        "NMAE": float(nmae),
-        "R2": float(r2),
-        "Unpredicted_HUCs": float(unpredicted_hucs),
-        "Unpredicted_mgd": unpredicted_mgd,
-        "Missing_mgd": missing_mgd,
-        "Missing_pct": float(missing_pct),
-    }
+    return year_metrics
 
 
 def update_metrics_summary(
-    metrics: dict[str, float], huc_level: int, case_study: str, year: int
+    year_metrics: dict[str, float],
+    huc_level: int,
+    case_study: str,
+    year: int,
+    summary_name: str = "metrics.csv",
 ):
     """
     Insert or replace a year's metrics in the case study summary CSV and recompute the average row.
 
     Parameters:
-        metrics (dict[str, float]): The metrics for the year.
-        huc_level (int): The HUC level the metrics were computed at.
+        year_metrics (dict[str, float]): The metrics for the year.
+        huc_level (int): The HUC level of the run.
         case_study (str): The case study the metrics belong to.
         year (int): The year the metrics belong to.
+        summary_name (str = "metrics.csv"): The name of the summary file.
     """
 
-    summary_path = path.join("output", f"huc{huc_level}", case_study, "metrics.csv")
-    row = pandas.DataFrame([{"Year": str(year), **metrics}])
+    summary_path = path.join("output", f"huc{huc_level}", case_study, summary_name)
+    row = pandas.DataFrame([{"Year": str(year), **year_metrics}])
 
     # years are run separately, so merge with rows written by earlier runs
     if path.exists(summary_path):
@@ -255,19 +297,120 @@ def run(
     """
 
     actual_values = raster_utilities.read_statistics(
-        huc2s,
-        huc_level,
-        case_study,
-        year,
-        [f"huc{huc_level}", "water_mgd", "geometry"],
+        huc2s=huc2s,
+        huc_level=huc_level,
+        case_study=case_study,
+        year=year,
+        columns=[f"huc{huc_level}", "water_mgd", "geometry"],
     )
     predicted_zonal_sums = compute_zonal_sums(
-        predicted_data, zones, zone_hucs, actual_values, huc_level
+        predicted_data, zones, zone_hucs, actual_values, huc_level=huc_level
     )
     metrics = evaluate_zonal_sums(
-        actual_values, predicted_zonal_sums, huc_level, case_study, year
+        actual_values,
+        predicted_zonal_sums,
+        huc_level=huc_level,
+        case_study=case_study,
+        year=year,
     )
-    update_metrics_summary(metrics, huc_level, case_study, year)
+    update_metrics_summary(
+        metrics, huc_level=huc_level, case_study=case_study, year=year
+    )
+
+
+def score_holdout(
+    predicted_data: numpy_typing.NDArray[numpy.float32],
+    initial_data: numpy_typing.NDArray[numpy.float32],
+    grid: raster_utilities.Grid,
+    huc2s: list[str],
+    huc_level: int,
+    case_study: str,
+    year: int,
+):
+    """
+    Scores a run below HUC-12 against the HUC-12 statistics, which the run didn't use.
+
+    Writes holdout_comparison.csv and holdout_comparison.gpkg to output/huc<huc_level>/<case_study>/<year>/ and updates
+    output/huc<huc_level>/<case_study>/holdout_metrics.csv. Most HUC-12s have no water and are easy to score, so the
+    metrics also cover only the HUC-12s with water (Wet_*). Report these next to the metrics for all HUC-12s. The
+    Initial_* metrics score the initial estimates, so the difference shows what disaggregation adds.
+
+    Parameters:
+        predicted_data (numpy_typing.NDArray[numpy.float32]): The disaggregated raster, NaN as nodata.
+        initial_data (numpy_typing.NDArray[numpy.float32]): The initial estimates, NaN as nodata.
+        grid (raster_utilities.Grid): The grid of both rasters.
+        huc2s (list[str]): The HUC-2s to evaluate.
+        huc_level (int): The HUC level of the run.
+        case_study (str): The case study to evaluate.
+        year (int): The year to evaluate.
+    """
+
+    scoring_level = raster_utilities.STATISTICS_HUC_LEVEL
+
+    actual_values = raster_utilities.read_statistics(
+        huc2s=huc2s,
+        huc_level=scoring_level,
+        case_study=case_study,
+        year=year,
+        columns=[f"huc{scoring_level}", "water_mgd", "geometry"],
+    )
+    if actual_values.crs != grid.crs:
+        actual_values = actual_values.to_crs(grid.crs)
+    zones, zone_hucs = raster_utilities.rasterize_zones(
+        actual_values.geometry,
+        actual_values[f"huc{scoring_level}"],
+        grid.shape,
+        grid.transform,
+    )
+
+    predicted_sums = compute_zonal_sums(
+        predicted_data, zones, zone_hucs, actual_values, huc_level=scoring_level
+    )
+    initial_sums = compute_zonal_sums(
+        initial_data, zones, zone_hucs, actual_values, huc_level=scoring_level
+    )
+
+    print(f"Holdout at HUC-{scoring_level}:")
+    holdout_metrics = evaluate_zonal_sums(
+        actual_values,
+        predicted_sums,
+        huc_level=scoring_level,
+        case_study=case_study,
+        year=year,
+        run_huc_level=huc_level,
+        comparison_name="holdout_comparison",
+    )
+
+    actual = actual_values["water_mgd"].to_numpy(dtype=numpy.float64)
+    predicted = predicted_sums["water_mgd"].to_numpy(dtype=numpy.float64)
+    initial = initial_sums["water_mgd"].to_numpy(dtype=numpy.float64)
+    wet = actual > 0
+
+    # the scored HUCs: those with a statistic and at least one valid cell
+    holdout_metrics["HUCs"] = float((~numpy.isnan(actual + predicted)).sum())
+    holdout_metrics["Wet_HUCs"] = float((wet & ~numpy.isnan(predicted)).sum())
+
+    for prefix, values, selection in [
+        ("Wet_", predicted, wet),
+        ("Initial_", initial, numpy.ones_like(wet)),
+        ("Initial_Wet_", initial, wet),
+    ]:
+        selected_metrics = compute_metrics(actual[selection], values[selection])
+        for name in ["RMSE", "MAE", "R2"]:
+            holdout_metrics[f"{prefix}{name}"] = selected_metrics[name]
+
+    print(
+        f"R^2 initial {holdout_metrics['Initial_R2']:.4f}, final {holdout_metrics['R2']:.4f}; "
+        f"with water only: initial {holdout_metrics['Initial_Wet_R2']:.4f}, final {holdout_metrics['Wet_R2']:.4f}"
+    )
+
+    update_metrics_summary(
+        holdout_metrics,
+        huc_level=huc_level,
+        case_study=case_study,
+        year=year,
+        summary_name="holdout_metrics.csv",
+    )
 
 
 def rescore(
@@ -278,7 +421,8 @@ def rescore(
 ):
     """
     Evaluate an existing output/huc<huc_level>/<case_study>/<year>/<case_study>_huc<huc_level>_<year>.tif outside the
-    pipeline, rebuilding the zones main.py would pass to run().
+    pipeline, rebuilding the zones main.py would pass to run(). A run below HUC-12 also gets its holdout score, which
+    needs the run's pycnophylactic-interpolation.tif.
 
     Parameters:
         huc2s (list[str] = ["14", "15"]): The HUC-2s to evaluate.
@@ -297,7 +441,11 @@ def rescore(
     grid = raster_utilities.Grid.from_raster(predicted_raster_path)
 
     zone_polygons = raster_utilities.read_statistics(
-        huc2s, huc_level, case_study, year, [f"huc{huc_level}", "geometry"]
+        huc2s=huc2s,
+        huc_level=huc_level,
+        case_study=case_study,
+        year=year,
+        columns=[f"huc{huc_level}", "geometry"],
     )
     # the raster stores EPSG:5070 as WKT, which to_crs doesn't treat as the same CRS: it would run an identity
     # transform that copies every polygon (~8 GB at CONUS HUC-12; see FIXES.md, fix 29)
@@ -311,15 +459,35 @@ def rescore(
     )
     del zone_polygons
 
+    predicted_data = raster_utilities.read_raster(predicted_raster_path, grid)
+
     run(
-        raster_utilities.read_raster(predicted_raster_path, grid),
+        predicted_data,
         zones,
         zone_hucs,
         huc2s,
-        huc_level,
-        case_study,
-        year,
+        huc_level=huc_level,
+        case_study=case_study,
+        year=year,
     )
+
+    if huc_level < raster_utilities.STATISTICS_HUC_LEVEL:
+        del zones, zone_hucs
+        score_holdout(
+            predicted_data,
+            raster_utilities.read_raster(
+                path.join(
+                    path.dirname(predicted_raster_path),
+                    "pycnophylactic-interpolation.tif",
+                ),
+                grid,
+            ),
+            grid,
+            huc2s,
+            huc_level=huc_level,
+            case_study=case_study,
+            year=year,
+        )
 
 
 if __name__ == "__main__":
@@ -328,7 +496,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--case_study",
-        choices=["irr", "pws-cu", "pws-gw", "pws-sw", "pws-tot"],
+        choices=list(raster_utilities.CASE_STUDIES),
         default="pws-tot",
         help="The case study to evaluate.",
     )
@@ -366,11 +534,16 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--huc_level",
-        choices=[2, 4, 6, 8, 10, 12, 14, 16],
+        choices=raster_utilities.HUC_LEVELS,
         default=12,
         type=int,
         help="The HUC scale the raster was disaggregated at, and is evaluated at.",
     )
     args = parser.parse_args()
     for year in args.years:
-        rescore(args.huc2s, args.huc_level, args.case_study, year)
+        rescore(
+            huc2s=args.huc2s,
+            huc_level=args.huc_level,
+            case_study=args.case_study,
+            year=year,
+        )
