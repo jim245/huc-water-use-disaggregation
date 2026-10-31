@@ -26,29 +26,31 @@ Outputs are placed in `output/huc{huc_level}/{case_study}/{year}/{case_study}_hu
 3. Compute initial estimates with [dasymetric mapping](./dasymetric_mapping.py).
 4. Smooth initial estimates with [pycnophylactic interpolation](./pycnophylactic_interpolation.py).
 5. Iteratively refine initial estimates using the [disaggregation](./disaggregation.py) regression model.
-6. [Evaluate](./evaluation.py) results by comparing predicted HUC totals with actuals.
+6. [Evaluate](./evaluation.py) results by comparing predicted HUC totals with actuals. A run below HUC-12 also gets a holdout score against the HUC-12 statistics, which it never used, written to `output/huc{huc_level}/{case_study}/holdout_metrics.csv`.
 7. [Render](./utilities/figure_utilities.py) the disaggregated raster to `output/huc{huc_level}/{case_study}/{year}/{case_study}_huc{huc_level}_{year}.png`.
 
 The [main.py](./main.py) orchestrator script can be invoked as follows:
 
 ```text
-usage: main.py [-h] [--case_study {irr,pws-cu,pws-gw,pws-sw,pws-tot}] [--year YEAR] [--huc2s HUC2S [HUC2S ...]] [--huc_level {2,4,6,8,10,12,14,16}] [--crs CRS] [--cell_size CELL_SIZE] [--bottom_panel_huc2s [BOTTOM_PANEL_HUC2S ...]]
+usage: main.py [-h] [--case_study {irr,pws-cu,pws-gw,pws-sw,pws-tot}] [--year YEAR] [--huc2s HUC2S [HUC2S ...]] [--huc_level {2,4,6,8,10,12}] [--crs CRS] [--cell_size CELL_SIZE] [--bottom_panel_huc2s [BOTTOM_PANEL_HUC2S ...]]
 
 options:
   -h, --help            show this help message and exit
   --case_study {irr,pws-cu,pws-gw,pws-sw,pws-tot}
-                        The case study to run, determines input statistics and ancillary data layers.
-  --year YEAR           The year that determines statistics and ancillary data layers.
+                        The case study to run. It selects the statistics and the ancillary layers.
+  --year YEAR           The year to run. It selects the statistics and the ancillary layers. pws-cu covers 2009-2020, and all other case studies cover 2000-2020.
   --huc2s HUC2S [HUC2S ...]
-                        The HUC-2 watersheds used for all spatial operations and calculations.
-  --huc_level {2,4,6,8,10,12,14,16}
-                        The HUC scale used for statistics, initial estimates and spatial disaggregation.
-  --crs CRS             The coordinate reference system used in all spatial operations.
+                        The HUC-2 watersheds of the run, without zero-padding (for example "1", not "01").
+  --huc_level {2,4,6,8,10,12}
+                        The HUC level of all stages. The source statistics stop at level 12. The project tested only levels 8 and 12.
+  --crs CRS             The coordinate reference system of all spatial operations.
   --cell_size CELL_SIZE
-                        The desired output cell size (in CRS units).
+                        The output cell size, in CRS units.
   --bottom_panel_huc2s [BOTTOM_PANEL_HUC2S ...]
-                        The HUC-2 watersheds shown in the figure's bottom panel, any subset of --huc2s; pass none to omit it.
+                        The HUC-2 watersheds in the bottom panel of the figure. They must be in --huc2s, so a run without 14 and 15 must set this option. Pass no values to omit the panel.
 ```
+
+Run each case study and year twice: `--huc_level 12` for the product, and `--huc_level 8` for its holdout score. Near-perfect scores in `metrics.csv` only show that HUC totals are preserved. The holdout score measures how well the method places water from HUC-8 down to HUC-12. It is a proxy, and it does not measure the error of individual cells.
 
 Example:
 
