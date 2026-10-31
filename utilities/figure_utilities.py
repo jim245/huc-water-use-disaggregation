@@ -24,15 +24,6 @@ from utilities import raster_utilities
 
 STATE_BOUNDARIES_PATH = path.join("input", "USA", "cb_2024_us_state_500k.shp")
 
-# the (sector, measure) each case study's statistics report
-CASE_STUDY_LABELS = {
-    "irr": ("Irrigation", "Water Consumption"),
-    "pws-cu": ("Public Water Supply", "Water Consumption"),
-    "pws-gw": ("Public Water Supply", "Groundwater Use"),
-    "pws-sw": ("Public Water Supply", "Surface Water Use"),
-    "pws-tot": ("Public Water Supply", "Total Water Use"),
-}
-
 MASK_OVERLAY_COLOR = "red"  # outline of mask region on top panels; None to omit
 CMAP = "viridis_r"
 LOG = True
@@ -88,7 +79,8 @@ def run(
         output_path (str): The path to the figure.
     """
 
-    sector, measure = CASE_STUDY_LABELS[case_study]
+    sector = raster_utilities.CASE_STUDIES[case_study].sector
+    measure = raster_utilities.CASE_STUDIES[case_study].measure
     units = "log10 Million Gallons per Day" if LOG else "Million Gallons per Day"
 
     return render(
