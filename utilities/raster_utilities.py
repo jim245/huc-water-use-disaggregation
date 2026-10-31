@@ -26,6 +26,45 @@ from rasterio import enums, features, io
 from rasterio import transform as rasterio_transform
 from rasterio import warp
 
+# all source statistics have 12-digit HUC IDs. The merge scripts sum them to coarser levels by truncation, so they
+# can't supply levels 14 and 16. The project tested only levels 8 and 12
+HUC_LEVELS = [2, 4, 6, 8, 10, 12]
+STATISTICS_HUC_LEVEL = 12
+
+
+@dataclass(frozen=True)
+class CaseStudy:
+    """
+    The settings of one case study. main.py selects the merge and raster preparation scripts for each case study.
+
+    Attributes:
+        sector (str): The water use sector, for the figure title.
+        measure (str): The quantity that the statistics report, for the figure title and label.
+        first_year (int): The first year in the source statistics.
+        last_year (int): The last year in the source statistics.
+        support_layer (Optional[int] = None): The index of the prepared layer whose cells > 0 can receive water. All
+            cells can receive water when None.
+    """
+
+    sector: str
+    measure: str
+    first_year: int
+    last_year: int
+    support_layer: Optional[int] = None
+
+
+CASE_STUDIES = {
+    # layer 0 is NLCD 81/82 (planted/cultivated). Without a support limit, the final irr 2000 map had 9.5% of its water
+    # on cells with no cropland
+    "irr": CaseStudy("Irrigation", "Water Consumption", 2000, 2020, support_layer=0),
+    # pws has no support limit: its layers are already clipped to the water service areas, and the final pws-tot 2000
+    # map had only 1.07% of its water on cells with no developed land
+    "pws-cu": CaseStudy("Public Water Supply", "Water Consumption", 2009, 2020),
+    "pws-gw": CaseStudy("Public Water Supply", "Groundwater Use", 2000, 2020),
+    "pws-sw": CaseStudy("Public Water Supply", "Surface Water Use", 2000, 2020),
+    "pws-tot": CaseStudy("Public Water Supply", "Total Water Use", 2000, 2020),
+}
+
 
 @dataclass(frozen=True)
 class Grid:
@@ -436,6 +475,7 @@ def prepare_raster_layer(
     filter_keys: Optional[list[int]] = None,
     resampling_method: enums.Resampling = enums.Resampling.sum,
     normalization_method: str = "log1p",
+    mask_key: str = "",
 ) -> str:
     """
     Prepares a raster for use in the disaggregation model.
@@ -461,6 +501,8 @@ def prepare_raster_layer(
         filter_keys (Optional[list[int]] = None): A list of integer values to filter the raster to.
         resampling_method (enums.Resampling = enums.Resampling.sum): The raster resampling method to use.
         normalization_method (str = "log1p"): The normalization method to use.
+        mask_key (str = ""): A name for the mask, added to the clipped and normalized filenames. Use it when the mask
+            changes between runs, so that concurrent runs with different masks don't overwrite each other's files.
 
     Returns:
         normalized_raster_path (str): The path to the prepared raster.
@@ -471,6 +513,7 @@ def prepare_raster_layer(
         "" if filter_keys is None else "_" + "-".join(str(key) for key in filter_keys)
     )
     template_key = path.splitext(path.basename(template_raster_path))[0]
+    mask_suffix = f"_{mask_key}" if mask_key else ""
 
     reprojected_directory = path.join(output_directory, "reprojected")
     os.makedirs(reprojected_directory, exist_ok=True)
@@ -513,7 +556,7 @@ def prepare_raster_layer(
     clipped_raster_path = clip_raster(
         reprojected_raster_path,
         raster_mask,
-        path.join(clipped_directory, f"{year}_{raster_title}.tif"),
+        path.join(clipped_directory, f"{year}_{raster_title}{mask_suffix}.tif"),
     )
 
     normalized_directory = path.join(
@@ -523,7 +566,7 @@ def prepare_raster_layer(
 
     normalized_raster_path = normalize_raster(
         clipped_raster_path,
-        path.join(normalized_directory, f"{year}_{raster_title}.tif"),
+        path.join(normalized_directory, f"{year}_{raster_title}{mask_suffix}.tif"),
         normalization_method,
     )
 
@@ -798,6 +841,9 @@ def write_raster(output_path: str, data: NDArray[numpy.float32], grid: Grid) -> 
     """
     Writes a single-band float32 GeoTIFF on the grid, with NaN as nodata.
 
+    The function writes to a temporary file in the same directory, then renames it. An interrupted write therefore
+    can't leave a partial raster at output_path.
+
     Parameters:
         output_path (str): The path to the output file.
         data (NDArray[numpy.float32]): The (height, width) values.
@@ -807,7 +853,10 @@ def write_raster(output_path: str, data: NDArray[numpy.float32], grid: Grid) -> 
         output_path (str): The path to the output file.
     """
 
-    with rasterio.open(output_path, "w", **grid.profile()) as output_raster:
+    # the process ID keeps concurrent runs from sharing a temporary file
+    temporary_path = f"{output_path}.{os.getpid()}.tmp"
+    with rasterio.open(temporary_path, "w", **grid.profile()) as output_raster:
         output_raster.write(data, 1)
+    os.replace(temporary_path, output_path)
 
     return output_path
