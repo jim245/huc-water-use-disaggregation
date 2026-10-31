@@ -64,12 +64,12 @@ def run(
     set_seed_and_growth(SEED)
 
     disaggregated_raster = runDisaggregation(
-        case_study,
-        year,
-        huc_level,
-        initial_estimates,
-        zones,
-        ancillary_datasets,
+        case_study=case_study,
+        year=year,
+        huc_level=huc_level,
+        initial_estimates_data=initial_estimates,
+        id_raster=zones,
+        ancillary_datasets=ancillary_datasets,
         patch_size=8,
         learning_rate=0.001,
         dropout=0.5,
