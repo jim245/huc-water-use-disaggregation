@@ -1,15 +1,14 @@
 """
-Disaggregates water use statistics using ancillary raster weights.
+Stage 4 of the pipeline: spatial disaggregation (see main.py).
 """
 
 import os
 import random
-from os import path
-from typing import Optional, cast
+from pathlib import Path
+from typing import Literal, cast
 
-# TensorFlow reads these when it is first imported, so they must be set before the TensorFlow/Keras imports below
-# (they used to be set inside run(), after the import, where they had no effect). PYTHONHASHSEED isn't set: Python
-# only reads it at interpreter start-up.
+# TensorFlow reads these when it is first imported, so they must be set before the TensorFlow and Keras imports below.
+# PYTHONHASHSEED isn't set here, because Python reads it only at interpreter start-up.
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["TF_DETERMINISTIC_OPS"] = "1"
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
@@ -18,14 +17,13 @@ os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
 import keras
 import numpy
+import tensorflow
 from numpy import random as numpy_random
 from numpy import typing as numpy_typing
-from tensorflow import config as tensorflow_config
-from tensorflow import random as tensorflow_random
 
 from utilities import model_utilities, raster_utilities
 
-SEED = 42  # the answer to life, the universe, and everything
+NEGLIGIBLE_FRACTION = 1e-6
 
 
 def run(
@@ -33,374 +31,285 @@ def run(
     initial_estimates: numpy_typing.NDArray[numpy.float32],
     zones: numpy_typing.NDArray[numpy.int32],
     grid: raster_utilities.Grid,
+    *,
     case_study: str,
     year: int,
-    huc_level: int = 12,
-    support_layer: Optional[int] = None,
+    huc_level: int,
+    support_layer: int | None = None,
 ) -> numpy_typing.NDArray[numpy.float32]:
     """
-    Disaggregates water use statistics using ancillary raster weights.
+    Refines the initial estimates with alternating CNN and random forest iterations (see disaggregate).
 
-    The result is written to output/huc<huc_level>/<case_study>/<year>/<case_study>_huc<huc_level>_<year>.tif.
+    Writes the result to output/huc<huc_level>/<case_study>/<year>/<case_study>_huc<huc_level>_<year>.tif, and the CNN
+    model to model.keras in the same directory.
 
     Parameters:
         prepared_layers (list[numpy_typing.NDArray[numpy.float32]]): The ancillary layers, NaN as nodata.
-        initial_estimates (numpy_typing.NDArray[numpy.float32]): The initial estimates (the pycnophylactic output).
-        zones (numpy_typing.NDArray[numpy.int32]): The huc_level zone index raster, 0 outside all HUCs, the same zones
-            the initial estimates preserve totals over.
-        grid (raster_utilities.Grid): The grid all of the rasters are on.
-        case_study (str): The case study to disaggregate.
+        initial_estimates (numpy_typing.NDArray[numpy.float32]): The initial estimates
+            (pycnophylactic_interpolation.run).
+        zones (numpy_typing.NDArray[numpy.int32]): The huc_level zone index raster (raster_utilities.rasterize_zones),
+            0 outside all HUCs.
+        grid (raster_utilities.Grid): The grid of all the rasters.
+        case_study (str): The case study of the run.
         year (int): The statistics year.
-        huc_level (int = 12): The HUC level whose totals are preserved.
-        support_layer (Optional[int] = None): Index into prepared_layers of the layer whose cells > 0 may receive water
-            (0 = NLCD cultivated for irrigation). All cells when None.
+        huc_level (int): The HUC level of the statistics.
+        support_layer (int | None = None): The index of the prepared layer whose cells > 0 can receive water. All
+            cells can receive water when None.
 
     Returns:
-        disaggregated_raster (numpy_typing.NDArray[numpy.float32]): The spatially disaggregated raster, as written.
+        disaggregated_raster (numpy_typing.NDArray[numpy.float32]): The disaggregated raster, as written.
     """
 
-    ancillary_datasets = numpy.dstack(tuple(prepared_layers))
+    directory = raster_utilities.run_directory(case_study=case_study, year=year, huc_level=huc_level)
 
-    set_seed_and_growth(SEED)
+    ancillary_layers = numpy.dstack(tuple(prepared_layers))
 
-    disaggregated_raster = runDisaggregation(
-        case_study=case_study,
-        year=year,
-        huc_level=huc_level,
-        initial_estimates_data=initial_estimates,
-        id_raster=zones,
-        ancillary_datasets=ancillary_datasets,
-        patch_size=8,
-        learning_rate=0.001,
-        dropout=0.5,
-        filters=[8, 16, 32, 64, 128],
-        huber_value=1,
-        smoothness_weight=0,
-        loss_parameters=[2, 0, 1],
-        max_iterations=30,
-        methods=["apcnn", "aprf"],
-        p=[0.01],
-        cnn_model="unet",
-        iteration_epochs=3,
-        batch_size=512,
-        min_iterations=30,
-        converge=1.5,
+    set_seed_and_growth(model_utilities.SEED)
+
+    disaggregated_raster = disaggregate(
+        ancillary_layers,
+        initial_estimates,
+        zones,
+        model_path=directory / "model.keras",
         support_layer=support_layer,
     )
 
-    # the loop works in float64; the file and everything downstream use the float32 values
+    # the loop works in float64. The file and all later stages use the float32 values
     disaggregated_raster = disaggregated_raster.squeeze(-1).astype(numpy.float32)
 
-    raster_utilities.write_raster(
-        path.join(
-            "output",
-            f"huc{huc_level}",
-            case_study,
-            str(year),
-            f"{case_study}_huc{huc_level}_{year}.tif",
-        ),
-        disaggregated_raster,
-        grid,
-    )
+    raster_utilities.write_raster(directory / f"{case_study}_huc{huc_level}_{year}.tif", disaggregated_raster, grid)
 
     return disaggregated_raster
 
 
-def runDisaggregation(
-    case_study: str,
-    year: int,
-    huc_level: int,
-    initial_estimates_data: numpy_typing.NDArray[numpy.float32],
-    id_raster: numpy_typing.NDArray[numpy.int32],
-    ancillary_datasets: numpy_typing.NDArray[numpy.float32],
+def disaggregate(
+    ancillary_layers: numpy_typing.NDArray[numpy.float32],
+    initial_estimates: numpy_typing.NDArray[numpy.float32],
+    zones: numpy_typing.NDArray[numpy.int32],
+    *,
+    model_path: Path,
+    support_layer: int | None = None,
     patch_size: int = 8,
     learning_rate: float = 0.001,
     dropout: float = 0.5,
-    filters: list[int] = [8, 16, 32, 64, 128],
+    filters: tuple[int, ...] = (8, 16, 32, 64, 128),
     huber_value: float = 1.0,
-    smoothness_weight: float = 0,
-    loss_parameters: list[int] = [2, 0, 1],
+    dsc: int = 1,
     max_iterations: int = 30,
-    methods: list[str] = ["apcnn", "aprf"],
-    p: list[float] = [0.01],
-    cnn_model: str = "unet",
+    sample_fraction: float = 0.01,
     iteration_epochs: int = 3,
-    batch_size: int = 64,
+    batch_size: int = 512,
     min_iterations: int = 30,
-    converge: float = 2.0,
+    converge: float = 1.5,
     random_forest_missing_value: float = numpy.nan,
-    cnn_target_scale: float | str = "std",
-    support_layer: Optional[int] = None,
+    cnn_target_scale: float | Literal["std"] = "std",
 ) -> numpy_typing.NDArray[numpy.float64]:
     """
-    Spatially disaggregates water use statistics using ancillary raster weights.
+    Refines the initial estimates with alternating CNN and random forest iterations.
 
-    Starting from the initial estimates, each iteration fits a model (CNN or random forest, alternating) that predicts
-    the current map from the ancillary layers, then rescales the prediction so every HUC keeps its initial total. The
-    rescaled prediction becomes the next iteration's target.
+    Each iteration fits a model that predicts the current map from the ancillary layers. Then it rescales the
+    prediction so that each HUC keeps its total in the initial estimates. A HUC whose predicted sum is at most
+    NEGLIGIBLE_FRACTION of its total keeps its values from the previous map, which hold its total. The result is the
+    target of the next iteration. Odd iterations use the CNN, and even iterations use the random forest. Writes the CNN
+    model to model_path when it builds the model and after each CNN iteration.
 
     Parameters:
-        case_study (str): The case study, used for the output directory the CNN model is saved in.
-        year (int): The year, used for the output directory the CNN model is saved in.
-        huc_level (int): The HUC level whose totals are preserved, used for the output directory the CNN model is saved in.
-        initial_estimates_data (numpy_typing.NDArray[numpy.float32]): The initial estimates (the pycnophylactic output). Their per-HUC sums are the totals each iteration is rescaled to.
-        id_raster (numpy_typing.NDArray[numpy.int32]): The zone index raster of the HUCs whose totals are preserved, 0 outside all HUCs (raster_utilities.rasterize_zones).
-        ancillary_datasets (numpy_typing.NDArray[numpy.float32]): The ancillary layers on the initial estimates grid, shaped (height, width, layers).
-        patch_size (int = 8): The side length of the square patches the CNN trains and predicts on. The U-Net depth in model_utilities.unet assumes 8.
-        learning_rate (float = 0.001): The Adam optimizer learning rate.
+        ancillary_layers (numpy_typing.NDArray[numpy.float32]): The ancillary layers on the grid of the initial
+            estimates, shaped (height, width, layers), NaN as nodata.
+        initial_estimates (numpy_typing.NDArray[numpy.float32]): The initial estimates. Their sum in each HUC is the
+            total that each iteration keeps.
+        zones (numpy_typing.NDArray[numpy.int32]): The zone index raster of the HUCs whose totals are kept, 0 outside
+            all HUCs.
+        model_path (Path): The CNN model file.
+        support_layer (int | None = None): The index of the ancillary layer whose cells > 0 can receive water. The
+            loop sets the predictions on other cells to 0 before each rescale, and doesn't compute them. All cells can
+            receive water when None.
+        patch_size (int = 8): The side length of the square CNN patches. It must be divisible by 8
+            (model_utilities.unet).
+        learning_rate (float = 0.001): The Adam learning rate.
         dropout (float = 0.5): The dropout rate at the U-Net bottleneck.
-        filters (list[int] = [8, 16, 32, 64, 128]): The filter counts per U-Net level; filters[4] is unused at patch size 8.
-        huber_value (float = 1.0): The Huber delta of the CNN loss terms, in units of the scaled targets (see cnn_target_scale).
-        smoothness_weight (float = 0): Weight of the loss's spread term, 40 / (1 + std(prediction)) before 2026-09. At this data's scale any weight rewards spread over accuracy (see FIXES.md, HUC-12 collapse), so it's 0.
-        loss_parameters (list[int] = [2, 0, 1]): [npredictions, usegradnorm, dsc], passed to model_utilities.compile_cnn_model. Only npredictions == 2 and usegradnorm == 0 are implemented. dsc 1 (separable conv + squeeze-excite blocks) replaced 0 (plain double 3x3 convs) in 2026-10: slightly better HUC-12 placement in holdout tests (see FIXES.md, fix 33).
+        filters (tuple[int, ...] = (8, 16, 32, 64, 128)): The filter count of each U-Net level (model_utilities.unet).
+        huber_value (float = 1.0): The Huber delta of the CNN loss (model_utilities.cnn_loss), in units of the
+            scaled targets (see cnn_target_scale).
+        dsc (int = 1): The convolution block style of the U-Net (model_utilities.unet_convblock).
         max_iterations (int = 30): The maximum number of iterations.
-        methods (list[str] = ["apcnn", "aprf"]): The two methods to alternate: odd iterations use methods[0], even iterations methods[1]. A method ending in "cnn" uses the CNN, any other the random forest.
-        p (list[float] = [0.01]): The fraction of training candidates sampled each iteration (patches with a valid centre cell for the CNN, valid cells for the random forest). Only p[0] is used.
-        cnn_model (str = "unet"): Unused; the CNN is always a U-Net.
-        iteration_epochs (int = 3): The number of CNN training epochs per CNN iteration.
-        batch_size (int = 64): The number of patches per CNN training and prediction batch.
-        min_iterations (int = 30): The first iteration at which convergence is checked.
-        converge (float = 2.0): The convergence threshold: an iteration converges while its error (mean absolute change from the previous map) is less than converge × the previous iteration's error.
-        random_forest_missing_value (float = numpy.nan): The value the random forest sees where an ancillary layer is missing. NaN uses scikit-learn's native missing-value handling; -9999999 reproduces the pre-2026-09 behavior (see FIXES.md, fix 6). The CNN always sees 0.
-        cnn_target_scale (float | str = "std"): Factor the CNN's training targets are multiplied by (its predictions are divided by it again). The loss terms depend on the target's units (see FIXES.md, HUC-12 collapse); "std" uses 1 / std(initial estimates) so the CNN trains at unit spread. 1.0 reproduces the pre-2026-09 behavior.
-        support_layer (Optional[int] = None): Index of the ancillary layer whose cells > 0 may receive water (0 = NLCD cultivated for irrigation). Predictions elsewhere are set to 0 before each HUC-8 rescale, and aren't computed (see FIXES.md, fix 15). All cells when None.
+        sample_fraction (float = 0.01): The fraction of the training candidates that each iteration samples. The CNN
+            candidates are the patches with a valid middle cell. The random forest candidates are the valid cells.
+        iteration_epochs (int = 3): The number of CNN training epochs in each CNN iteration.
+        batch_size (int = 512): The number of patches in each CNN training and prediction batch.
+        min_iterations (int = 30): The first iteration at which the loop checks for convergence.
+        converge (float = 1.5): The convergence limit. The error of an iteration is the mean absolute change from the
+            previous map. From min_iterations on, the loop keeps the map with the lowest error while each error is
+            less than converge × the previous error. At the first error that isn't, the loop stops and returns the
+            kept map, or the current map if it kept none. With min_iterations equal to max_iterations, the result is
+            always the map of the last iteration.
+        random_forest_missing_value (float = numpy.nan): The value that the random forest sees where an ancillary
+            layer has no data. NaN uses the missing-value handling of scikit-learn. The CNN always sees 0.
+        cnn_target_scale (float | Literal["std"] = "std"): The factor that multiplies the CNN training targets. The
+            loop divides the predictions by the same factor. The loss terms depend on the units of the targets. "std"
+            uses 1 / std(initial estimates), so that the CNN trains at unit spread.
 
     Returns:
-        initial_estimates_data (numpy_typing.NDArray[numpy.float64]): The disaggregated raster, shaped (height, width, 1).
+        estimates (numpy_typing.NDArray[numpy.float64]): The disaggregated raster, shaped (height, width, 1).
     """
 
-    output_directory = path.join("output", f"huc{huc_level}", case_study, str(year))
+    shape = cast(tuple[int, int], initial_estimates.shape)
 
-    initial_estimates_shape = cast(tuple[int, int], initial_estimates_data.shape)
-
-    # the CNN trains on targets at unit spread by default (see cnn_target_scale)
     if cnn_target_scale == "std":
-        cnn_target_scale = 1.0 / float(numpy.nanstd(initial_estimates_data))
+        cnn_target_scale = 1.0 / float(numpy.nanstd(initial_estimates))
     cnn_target_scale = float(cnn_target_scale)
 
-    # zones that cover no cell can't affect any per-zone sum, so the highest index present sets the array sizes
-    zone_count = int(id_raster.max()) + 1
-    zone_raster_indices = id_raster.ravel()
+    zone_count = int(zones.max()) + 1
+    zone_indices = zones.ravel()
 
-    # per-HUC initial estimate totals, which each iteration's predictions are rescaled to match
-    initial_estimates_valid = ~numpy.isnan(initial_estimates_data).ravel()
+    initial_valid = ~numpy.isnan(initial_estimates).ravel()
     zone_totals = numpy.bincount(
-        zone_raster_indices[initial_estimates_valid],
-        weights=initial_estimates_data.ravel()[initial_estimates_valid],
+        zone_indices[initial_valid],
+        weights=initial_estimates.ravel()[initial_valid],
         minlength=zone_count,
     )
-    zone_has_totals = (
-        numpy.bincount(
-            zone_raster_indices[initial_estimates_valid], minlength=zone_count
-        )
-        > 0
-    )
+    zone_has_totals = numpy.bincount(zone_indices[initial_valid], minlength=zone_count) > 0
     zone_has_totals[0] = False
 
-    initial_estimates_data = numpy.expand_dims(initial_estimates_data, axis=2)
-    initial_estimates_valid_mask = ~numpy.isnan(initial_estimates_data[..., 0])
-    previous_initial_estimates_data = initial_estimates_data
+    estimates = numpy.expand_dims(initial_estimates, axis=2).astype(numpy.float64)
+    estimates_valid = ~numpy.isnan(estimates[..., 0])
+    previous_estimates = estimates
 
-    initial_estimates_mask = numpy.where(id_raster != 0, 1.0, numpy.nan)
+    zone_mask = numpy.where(zones != 0, 1.0, numpy.nan)
 
-    # only cells inside a HUC with a valid initial estimate survive masking after each prediction, so only those
-    # cells, and only the patches containing at least one of them, need to be predicted
-    kept_cells = (id_raster != 0) & initial_estimates_valid_mask
+    # only these cells keep their values after the masking in the loop, so only the patches that hold one of them
+    # need a prediction
+    kept_cells = (zones != 0) & estimates_valid
 
-    # cells that may receive water; predictions elsewhere are zeroed, so they needn't be computed
     supported = (
-        None
-        if support_layer is None
-        else numpy.nan_to_num(ancillary_datasets[..., support_layer], nan=0.0) > 0
+        None if support_layer is None else numpy.nan_to_num(ancillary_layers[..., support_layer], nan=0.0) > 0
     )
     prediction_cells = kept_cells if supported is None else kept_cells & supported
     kept_patches = (
-        numpy.lib.stride_tricks.sliding_window_view(
-            prediction_cells, (patch_size, patch_size)
-        )
+        numpy.lib.stride_tricks.sliding_window_view(prediction_cells, (patch_size, patch_size))
         .any(axis=(2, 3))
         .ravel()
     )
 
-    ancillary_variables_mask = numpy.dstack(
-        [initial_estimates_mask] * ancillary_datasets.shape[2]
-    )
+    ancillary_layers = ancillary_layers * numpy.dstack([zone_mask] * ancillary_layers.shape[2])
 
-    # mask the ancillary datasets with the variable mask
-    ancillary_datasets = ancillary_datasets * ancillary_variables_mask
+    ancillary_patches = model_utilities.PatchView(ancillary_layers, patch_size)
 
-    # ancillary variable patches, read from a sliding-window view rather than copied (ancillary_datasets must not
-    # be modified from here on)
-    ancillary_patches = model_utilities.PatchView(ancillary_datasets, patch_size)
-
-    # random forest input: missing ancillary values are left as NaN (scikit-learn's forests handle NaN natively) or
-    # filled with random_forest_missing_value; cells outside HUCs are never trained on or predicted
     random_forest_ancillary = (
-        ancillary_datasets
+        ancillary_layers
         if numpy.isnan(random_forest_missing_value)
-        else numpy.nan_to_num(ancillary_datasets, nan=random_forest_missing_value)
+        else numpy.nan_to_num(ancillary_layers, nan=random_forest_missing_value)
     )
 
-    # compile the model and save the initial weights
-    compiled_cnn_model = model_utilities.compile_cnn_model(
-        [patch_size, patch_size, ancillary_datasets.shape[2]],
+    cnn_model = model_utilities.compile_cnn_model(
+        (patch_size, patch_size, ancillary_layers.shape[2]),
         learning_rate,
         dropout,
         filters,
         huber_value,
-        smoothness_weight,
-        loss_parameters=loss_parameters,
+        dsc,
     )
+    cnn_model.save(model_path, include_optimizer=True)
 
-    compiled_cnn_model.save(
-        path.join(output_directory, "model.keras"), include_optimizer=True
-    )
-
-    # set initial error values
     previous_error = -numpy.inf
     minimum_error = numpy.inf
+    lowest_error_estimates: numpy_typing.NDArray[numpy.float64] | None = None
 
     for iteration in range(1, max_iterations + 1):
-        # alternate methods: odd iterations use methods[0], even iterations methods[1]
-        iteration_method = methods[0] if (iteration % 2) == 1 else methods[1]
+        estimates = estimates * zone_mask[..., numpy.newaxis]
 
-        if iteration_method.endswith("cnn"):
-            initial_estimates_data = (
-                initial_estimates_data * initial_estimates_mask[..., numpy.newaxis]
-            )
+        if iteration % 2 == 1:
+            cnn_targets = estimates if cnn_target_scale == 1.0 else estimates * cnn_target_scale
+            target_patches = model_utilities.PatchView(cnn_targets, patch_size)
 
-            # the loss is unit-dependent, so the CNN can train on scaled targets (undone after prediction)
-            cnn_targets = (
-                initial_estimates_data
-                if cnn_target_scale == 1.0
-                else initial_estimates_data * cnn_target_scale
-            )
-            patches = model_utilities.PatchView(cnn_targets, patch_size)
-
-            compiled_cnn_model = model_utilities.load_model(
-                path.join(output_directory, "model.keras"),
-                huber_value,
-                smoothness_weight,
-            )
+            cnn_model = model_utilities.load_model(model_path, huber_value)
             model_utilities.fit_cnn(
                 ancillary_patches,
-                patches,
-                p,
-                compiled_cnn_model,
+                target_patches,
+                sample_fraction,
+                cnn_model,
                 iteration_epochs,
                 batch_size,
             )
-            compiled_cnn_model.save(
-                path.join(output_directory, "model.keras"),
-                include_optimizer=True,
-            )
+            cnn_model.save(model_path, include_optimizer=True)
 
-            predicted_maps = model_utilities.predict_cnn(
-                compiled_cnn_model,
+            predicted_map = model_utilities.predict_cnn(
+                cnn_model,
                 ancillary_patches,
-                initial_estimates_shape,
+                shape,
                 batch_size,
                 patch_mask=kept_patches,
             )
             if cnn_target_scale != 1.0:
-                predicted_maps = [
-                    predicted_map / cnn_target_scale for predicted_map in predicted_maps
-                ]
+                predicted_map = predicted_map / cnn_target_scale
 
         else:
-            initial_estimates_data = (
-                initial_estimates_data * initial_estimates_mask[..., numpy.newaxis]
+            forest = model_utilities.fit_rf(random_forest_ancillary, estimates, sample_fraction)
+            predicted_map = numpy.expand_dims(
+                model_utilities.predict_rf(forest, random_forest_ancillary, cell_mask=prediction_cells), axis=2
             )
 
-            mod = model_utilities.fit(
-                random_forest_ancillary, initial_estimates_data, p, iteration_method
-            )
+        predicted_map = predicted_map * zone_mask[..., numpy.newaxis]
+        predicted_map[predicted_map < 0] = 0
+        predicted_map[~estimates_valid, :] = numpy.nan
 
-            predicted_maps = model_utilities.predict(
-                mod, random_forest_ancillary, cell_mask=prediction_cells
-            )
+        if supported is not None:
+            predicted_map[kept_cells & ~supported] = 0.0
 
-            # expand the predicted maps dimensions
-            for i in range(len(predicted_maps)):
-                predicted_maps[i] = numpy.expand_dims(predicted_maps[i], axis=2)
-
-        for predicted_map in predicted_maps:
-            predicted_map = predicted_map * initial_estimates_mask[..., numpy.newaxis]
-            predicted_map[predicted_map < 0] = 0
-            predicted_map[~initial_estimates_valid_mask, :] = numpy.nan
-
-            # no water on cells that can't receive it (before the HUC-8 rescale)
-            if supported is not None:
-                predicted_map[kept_cells & ~supported] = 0.0
-
-            # per-HUC predicted totals
-            predicted_valid = ~numpy.isnan(predicted_map).ravel()
-            predicted_sums = numpy.bincount(
-                zone_raster_indices[predicted_valid],
-                weights=predicted_map.ravel()[predicted_valid],
-                minlength=zone_count,
-            )
-            zone_has_predictions = (
-                numpy.bincount(
-                    zone_raster_indices[predicted_valid], minlength=zone_count
-                )
-                > 0
-            )
-
-            # rescale each HUC's predictions to its initial total; HUCs with a negligible predicted total are left as is
-            rescale = (
-                zone_has_totals
-                & zone_has_predictions
-                & (predicted_sums > zone_totals * 1e-6)
-            )
-            polygon_ratios = numpy.ones(zone_count)
-            numpy.divide(zone_totals, predicted_sums, out=polygon_ratios, where=rescale)
-
-            predicted_map = (
-                predicted_map * polygon_ratios[id_raster][..., numpy.newaxis]
-            )
-
-            initial_estimates_data = predicted_map
-
-        # convergence error: mean absolute change from the previous map, and its ratio to the previous error
-        error = numpy.nanmean(
-            abs(initial_estimates_data - previous_initial_estimates_data)
+        predicted_valid = ~numpy.isnan(predicted_map).ravel()
+        predicted_sums = numpy.bincount(
+            zone_indices[predicted_valid],
+            weights=predicted_map.ravel()[predicted_valid],
+            minlength=zone_count,
         )
+        zone_has_predictions = numpy.bincount(zone_indices[predicted_valid], minlength=zone_count) > 0
+
+        rescale = zone_has_totals & zone_has_predictions & (predicted_sums > zone_totals * NEGLIGIBLE_FRACTION)
+        zone_ratios = numpy.ones(zone_count)
+        _ = numpy.divide(zone_totals, predicted_sums, out=zone_ratios, where=rescale)
+
+        fallback_zones = zone_has_totals & (zone_totals > 0) & ~rescale
+        estimates = numpy.where(
+            fallback_zones[zones][..., numpy.newaxis],
+            estimates,
+            predicted_map * zone_ratios[zones][..., numpy.newaxis],
+        )
+        if fallback_zones.any():
+            print(
+                f"Disaggregation fallback: {int(fallback_zones.sum())} HUCs kept their previous values, "
+                + f"{zone_totals[fallback_zones].sum():.4f} mgd"
+            )
+
+        error = numpy.nanmean(abs(estimates - previous_estimates))
         error_rate = (error / previous_error) if previous_error > 0 else numpy.inf
         previous_error = error
 
-        # from min_iterations on, keep the lowest-error map while the error ratio stays below converge; once it
-        # doesn't, stop and return that map (or the current one if the first checked iteration already fails). If
-        # max_iterations is reached without stopping, the last map is returned, so with min_iterations ==
-        # max_iterations the result is always the last iteration's map
         if iteration >= min_iterations:
             if error_rate < converge:
                 if error < minimum_error:
                     minimum_error = error
-                    lowest_error_disaggregated_data = numpy.copy(initial_estimates_data)
+                    lowest_error_estimates = numpy.copy(estimates)
             else:
-                if iteration != min_iterations:
-                    initial_estimates_data = lowest_error_disaggregated_data
+                if lowest_error_estimates is not None:
+                    estimates = lowest_error_estimates
                 break
-        previous_initial_estimates_data = initial_estimates_data
+        previous_estimates = estimates
 
-    return initial_estimates_data
+    return estimates
 
 
-def set_seed_and_growth(seed: int):
+def set_seed_and_growth(seed: int) -> None:
     """
-    Seed randomness and allow memory growth.
+    Seeds Python, NumPy and TensorFlow, clears the Keras session, and lets TensorFlow allocate GPU memory as needed.
 
     Parameters:
-      seed (int): An initial seed.
+        seed (int): The seed.
     """
 
-    # seed randomness
     random.seed(seed)
     numpy_random.seed(seed)
     keras.backend.clear_session()
-    tensorflow_random.set_seed(seed)
+    tensorflow.random.set_seed(seed)
 
-    # allow dynamic memory allocation for all available GPUs
-    for gpu in tensorflow_config.list_physical_devices("GPU"):
-        tensorflow_config.experimental.set_memory_growth(gpu, True)
+    for gpu in tensorflow.config.list_physical_devices("GPU"):
+        tensorflow.config.experimental.set_memory_growth(gpu, True)
