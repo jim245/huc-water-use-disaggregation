@@ -153,7 +153,7 @@ def main(
                     year=year,
                 )
 
-            prepared_raster_paths = generate_pws_rasters.run(
+            prepared_layers = generate_pws_rasters.run(
                 huc2s=huc2s,
                 reprojected_crs=reprojected_crs,
                 year=year,
@@ -168,7 +168,7 @@ def main(
                 year=year,
             )
 
-            prepared_raster_paths = generate_irr_rasters.run(
+            prepared_layers = generate_irr_rasters.run(
                 huc2s=huc2s,
                 reprojected_crs=reprojected_crs,
                 year=year,
@@ -180,12 +180,7 @@ def main(
             # a case study in CASE_STUDIES has no branch here
             raise ValueError(f"Unhandled case study {case_study}!")
 
-    # every stage works on the template grid, and read_raster raises an error for a raster on another grid
     grid = raster_utilities.Grid.from_raster(template_raster_path)
-    prepared_layers = [
-        raster_utilities.read_raster(prepared_raster_path, grid)
-        for prepared_raster_path in prepared_raster_paths
-    ]
 
     # read the statistics and rasterize their HUCs once, so every stage assigns each cell to the same HUC
     statistics = raster_utilities.read_statistics(

@@ -4,14 +4,15 @@ Utility for handling common raster operations.
 
 import glob
 import os
+import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
-from os import path
-from typing import Any, Optional, cast
+from pathlib import Path
+from typing import Any, cast
 
-# Activating the conda environment sets PROJ_NETWORK=ON, which lets PROJ download grid-based datum shifts and moves
-# WGS84 sources (NLCD, DARTE, GDP, WorldPop) ~0.3 m relative to running .cenv/bin/python directly (FIXES.md fix 23).
-# Pinning it off keeps every launch on the same transformation, independent of internet access and PROJ's grid cache
+# Activating the conda environment sets PROJ_NETWORK=ON. PROJ can then download grid-based datum shifts, which move the
+# WGS84 sources (NLCD, DARTE, GDP, WorldPop) relative to a run of .cenv/bin/python without activation. Pinning it off
+# keeps every run on the same transformation, with or without internet access and PROJ's grid cache
 os.environ["PROJ_NETWORK"] = "OFF"
 
 # isort: split
@@ -23,12 +24,10 @@ import pandas
 import rasterio
 import shapely
 from numpy.typing import NDArray
-from rasterio import enums, features, io
+from rasterio import enums, features, warp
 from rasterio import transform as rasterio_transform
-from rasterio import warp
+from shapely.geometry import MultiPolygon, Polygon
 
-# all source statistics have 12-digit HUC IDs. The merge scripts sum them to coarser levels by truncation, so they
-# can't supply levels 14 and 16. The project tested only levels 8 and 12
 HUC_LEVELS = [2, 4, 6, 8, 10, 12]
 STATISTICS_HUC_LEVEL = 12
 
@@ -46,7 +45,7 @@ class CaseStudy:
         measure (str): The quantity that the statistics report, for the figure title and label.
         first_year (int): The first year in the source statistics.
         last_year (int): The last year in the source statistics.
-        support_layer (Optional[int] = None): The index of the prepared layer whose cells > 0 can receive water. All
+        support_layer (int | None = None): The index of the prepared layer whose cells > 0 can receive water. All
             cells can receive water when None.
     """
 
@@ -54,15 +53,13 @@ class CaseStudy:
     measure: str
     first_year: int
     last_year: int
-    support_layer: Optional[int] = None
+    support_layer: int | None = None
 
 
 CASE_STUDIES = {
-    # layer 0 is NLCD 81/82 (planted/cultivated). Without a support limit, the final irr 2000 map had 9.5% of its water
-    # on cells with no cropland
+    # layer 0 is NLCD 81/82 (planted/cultivated). Without a support limit, irr puts water on cells with no cropland
     "irr": CaseStudy("Irrigation", "Water Consumption", 2000, 2020, support_layer=0),
-    # pws has no support limit: its layers are already clipped to the water service areas, and the final pws-tot 2000
-    # map had only 1.07% of its water on cells with no developed land
+    # pws has no support limit, because its layers are already clipped to the water service areas
     "pws-cu": CaseStudy("Public Water Supply", "Water Consumption", 2009, 2020),
     "pws-gw": CaseStudy("Public Water Supply", "Groundwater Use", 2000, 2020),
     "pws-sw": CaseStudy("Public Water Supply", "Surface Water Use", 2000, 2020),
@@ -86,12 +83,12 @@ class Grid:
     shape: tuple[int, int]
 
     @classmethod
-    def from_raster(cls, raster_path: str) -> "Grid":
+    def from_raster(cls, raster_path: str | Path) -> "Grid":
         """
         Reads the grid of an existing raster (the template, in main.py).
 
         Parameters:
-            raster_path (str): The path to the raster.
+            raster_path (str | Path): The path to the raster.
 
         Returns:
             grid (Grid): The raster's grid.
@@ -124,77 +121,44 @@ class Grid:
         }
 
 
-def clip_raster(
-    raster_path: str, raster_mask: NDArray[numpy.bool_], output_path: str
-) -> str:
-    """
-    Clips the supplied raster using the provided mask.
-
-    Cells outside the mask are set to the raster's nodata (0 if it has none); the raster's extent is unchanged.
-
-    Parameters:
-        raster_path (str): The raster path to clip.
-        raster_mask (NDArray[numpy.bool_]): True for the cells to keep, on the raster's grid (see rasterize_mask).
-        output_path (str): The path to the output file.
-
-    Returns:
-        output_path (str): The path to the output file.
-    """
-
-    with rasterio.open(raster_path) as original:
-        if original.shape != raster_mask.shape:
-            raise ValueError(f"{raster_path} and the mask aren't on the same grid")
-        raster = cast(NDArray[Any], original.read(1))
-        nodata = cast(Optional[float], original.nodata)
-        profile = cast(dict[str, Any], original.profile)
-
-    raster[~raster_mask] = nodata if nodata is not None else 0
-
-    with rasterio.open(output_path, "w", **profile) as output_raster:
-        output_raster.write(raster, 1)
-
-    return output_path
-
-
-def extrapolate_raster(raster_path: str, target_year: int) -> str:
+def extrapolate_raster(raster_path: Path, target_year: int) -> Path:
     """
     Extrapolates a raster set to the target year using pixel-wise linear regression over sibling rasters.
 
-    raster_path is the (missing) path for target_year and must contain the year; its first occurrence is replaced
-    with a wildcard to find siblings. Every sibling with an earlier year and the same shape as the latest one is used
-    to fit a straight line per pixel. Earlier "-predicted.tif" outputs are skipped (their year doesn't parse), so
-    predictions never feed later predictions. Pixels that are nodata in any year are NaN. The trend can go negative:
-    log1p normalization clamps negatives to 0, min-max normalization does not.
+    raster_path is the (missing) path for target_year and must contain the year. Its first occurrence is replaced
+    with a wildcard to find siblings. Every sibling with an earlier year and the same shape and transform as the latest
+    one is used to fit a straight line per pixel. Earlier "-predicted.tif" outputs are skipped (their year doesn't
+    parse), so predictions never feed later predictions. Pixels that are nodata in any year are NaN. The trend can go
+    negative: log1p normalization clamps negatives to 0, and min-max normalization doesn't.
 
     Parameters:
-        raster_path (str): The path the raster for target_year would have.
+        raster_path (Path): The path the raster for target_year would have.
         target_year (int): The year to extrapolate to.
 
     Returns:
-        predicted_raster_path (str): The path to the output file, raster_path with a "-predicted.tif" suffix.
+        predicted_raster_path (Path): The path to the output file, raster_path with a "-predicted.tif" suffix.
     """
 
-    known_raster_paths = find_sibling_rasters(raster_path, target_year)
+    known_raster_paths = find_sibling_rasters(str(raster_path), target_year)
 
     if not known_raster_paths:
         raise FileNotFoundError(
-            f"No sibling rasters found for extrapolation of {raster_path!r} "
-            f"with a year < {target_year}."
+            f"No sibling rasters found for extrapolation of {str(raster_path)!r} with a year < {target_year}."
         )
 
     years = sorted(known_raster_paths.keys())
 
-    with rasterio.open(known_raster_paths[years[-1]]) as ref:
-        ref_shape = (ref.height, ref.width)
+    with rasterio.open(known_raster_paths[years[-1]]) as reference:
+        reference_grid = (reference.shape, reference.transform)
 
     arrays = []
     matched_years = []
-    profile: Optional[dict[str, Any]] = None
+    profile: dict[str, Any] | None = None
     nodata_val = None
 
     for year in years:
         with rasterio.open(known_raster_paths[year]) as src:
-            if (src.height, src.width) != ref_shape:
+            if (src.shape, src.transform) != reference_grid:
                 continue
             if profile is None:
                 profile = src.profile.copy()
@@ -202,8 +166,7 @@ def extrapolate_raster(raster_path: str, target_year: int) -> str:
             arrays.append(src.read(1).astype(numpy.float64))
             matched_years.append(year)
 
-    stacked = numpy.stack(arrays, axis=0)  # (T, H, W)
-    T, H, W = stacked.shape
+    stacked = numpy.stack(arrays, axis=0)  # (years, height, width)
 
     # pixels that are valid across all known years
     if nodata_val is not None and not numpy.isnan(float(nodata_val)):
@@ -211,61 +174,47 @@ def extrapolate_raster(raster_path: str, target_year: int) -> str:
     else:
         valid_mask = numpy.all(~numpy.isnan(stacked), axis=0)
 
-    # design matrix [year, 1] shape (T, 2)
-    X = numpy.stack(
-        [numpy.array(matched_years, dtype=numpy.float64), numpy.ones(T)], axis=1
+    # design matrix [year, 1] shape (years, 2)
+    design = numpy.stack(
+        [numpy.array(matched_years, dtype=numpy.float64), numpy.ones(len(matched_years))], axis=1
     )
 
     # solve for coefficients over valid pixels only: (2, N_valid)
-    flat = stacked[:, valid_mask]
-    coefficients, _, _, _ = numpy.linalg.lstsq(X, flat, rcond=None)
+    coefficients, _, _, _ = numpy.linalg.lstsq(design, stacked[:, valid_mask], rcond=None)
 
-    result = numpy.full((H, W), numpy.nan, dtype=numpy.float32)
-    result[valid_mask] = (coefficients[0] * target_year + coefficients[1]).astype(
-        numpy.float32
-    )
+    result = numpy.full(valid_mask.shape, numpy.nan, dtype=numpy.float32)
+    result[valid_mask] = (coefficients[0] * target_year + coefficients[1]).astype(numpy.float32)
 
     assert profile is not None
     profile.update(dtype=numpy.float32, nodata=numpy.nan)
-    os.makedirs(path.dirname(raster_path), exist_ok=True)
-    predicted_raster_path = path.join(
-        path.dirname(raster_path),
-        path.splitext(path.basename(raster_path))[0] + "-predicted.tif",
-    )
-
-    with rasterio.open(predicted_raster_path, "w", **profile) as output_raster:
-        output_raster.write(result, 1)
+    raster_path.parent.mkdir(parents=True, exist_ok=True)
+    predicted_raster_path = raster_path.with_name(f"{raster_path.stem}-predicted.tif")
+    _write_atomically(predicted_raster_path, result, profile)
 
     return predicted_raster_path
 
 
-def filter_raster(raster_path: str, filters: list[int], output_path: str) -> str:
+def filter_raster(raster_path: Path, filters: Sequence[int], output_path: Path) -> Path:
     """
     Filters the provided raster with the supplied filters.
 
-    Cells whose value is in filters keep that value (e.g. their NLCD class code); all other cells become 0. The result
-    is not a 1/0 mask.
+    Cells whose value is in filters become 1, and all other cells become 0. Average resampling then gives the share of
+    each target cell in the kept classes. Keeping the class codes would weight one class over another by its code.
 
     Parameters:
-        raster_path (str): The path to the raster to filter.
-        filters (list[int]): The values to filter the raster band for.
-        output_path (str): The path to the output file.
+        raster_path (Path): The path to the raster to filter.
+        filters (Sequence[int]): The values to keep.
+        output_path (Path): The path to the output file.
 
     Returns:
-        output_path (str): The path to the output file.
+        output_path (Path): The path to the output file.
     """
 
-    original = cast(io.DatasetReader, rasterio.open(raster_path))
-    data = cast(numpy.ndarray, original.read(1))
-    profile = cast(dict[str, Any], original.profile)
-    original.close()
+    with rasterio.open(raster_path) as original:
+        data = cast(NDArray[Any], original.read(1))
+        profile = cast(dict[str, Any], original.profile)
 
-    # filter the raster to cells containing values only in filters
-    filtered_raster = numpy.where(numpy.isin(data, filters), data, 0)
-
-    outfile = cast(io.DatasetWriter, rasterio.open(output_path, "w", **profile))
-    outfile.write(filtered_raster, 1)
-    outfile.close()
+    _write_atomically(output_path, numpy.isin(data, filters).astype(data.dtype), profile)
 
     return output_path
 
@@ -274,7 +223,7 @@ def find_sibling_rasters(raster_path: str, target_year: int) -> dict[int, str]:
     """
     Finds the rasters of earlier years in the same series as raster_path.
 
-    raster_path must contain target_year; its first occurrence is replaced with a wildcard. Matches whose year part
+    raster_path must contain target_year. Its first occurrence is replaced with a wildcard. Matches whose year part
     isn't an integer (e.g. earlier "-predicted.tif" outputs) are skipped.
 
     Parameters:
@@ -292,9 +241,7 @@ def find_sibling_rasters(raster_path: str, target_year: int) -> dict[int, str]:
 
     known_raster_paths: dict[int, str] = {}
     for match in glob.glob(glob_pattern):
-        candidate_year_str = match[
-            prefix_len : len(match) - suffix_len if suffix_len else None
-        ]
+        candidate_year_str = match[prefix_len : len(match) - suffix_len if suffix_len else None]
         try:
             candidate_year = int(candidate_year_str)
         except ValueError:
@@ -306,8 +253,8 @@ def find_sibling_rasters(raster_path: str, target_year: int) -> dict[int, str]:
 
 
 def generate_mask(
-    primary_mask_paths: list[str],
-    secondary_mask_paths: Optional[list[str]] = None,
+    primary_mask_paths: Sequence[Path],
+    secondary_mask_paths: Sequence[Path] = (),
     reprojected_crs: str = "EPSG:5070",
 ) -> geopandas.GeoDataFrame:
     """
@@ -317,8 +264,8 @@ def generate_mask(
     given.
 
     Parameters:
-        primary_mask_paths (list[str]): A list of paths to the primary masking shapefiles.
-        secondary_mask_paths (Optional[list[str]] = None): A list of paths to other masking shapefiles.
+        primary_mask_paths (Sequence[Path]): The paths to the primary masking shapefiles.
+        secondary_mask_paths (Sequence[Path] = ()): The paths to other masking shapefiles.
         reprojected_crs (str = "EPSG:5070"): The CRS of the generated mask.
 
     Returns:
@@ -326,8 +273,7 @@ def generate_mask(
     """
 
     primary_masks = [
-        geopandas.read_file(primary, columns=["geometry"]).to_crs(reprojected_crs)
-        for primary in primary_mask_paths
+        geopandas.read_file(primary, columns=["geometry"]).to_crs(reprojected_crs) for primary in primary_mask_paths
     ]
 
     primary_mask = pandas.concat(primary_masks)
@@ -340,12 +286,10 @@ def generate_mask(
         primary_union = shapely.unary_union(valid_primary)
 
     if secondary_mask_paths:
-        # a GeoSeries with a CRS is reprojected to each file's CRS; a bare geometry would be assumed to be in it
+        # a GeoSeries with a CRS is reprojected to each file's CRS. A bare geometry would be assumed to be in it
         primary_union_series = geopandas.GeoSeries([primary_union], crs=reprojected_crs)
         secondary_masks = [
-            geopandas.read_file(
-                secondary, columns=["geometry"], mask=primary_union_series
-            ).to_crs(reprojected_crs)
+            geopandas.read_file(secondary, columns=["geometry"], mask=primary_union_series).to_crs(reprojected_crs)
             for secondary in secondary_mask_paths
         ]
 
@@ -357,7 +301,7 @@ def generate_mask(
             secondary_union = shapely.coverage_union_all(valid_secondary)
         except shapely.errors.GEOSException:
             secondary_union = shapely.unary_union(valid_secondary)
-        primary_mask = primary_mask.clip(secondary_union)
+        primary_mask = primary_mask.clip(cast(Polygon | MultiPolygon, secondary_union))
 
     return primary_mask
 
@@ -373,64 +317,48 @@ def huc2_cache_key(huc2s: Sequence[str]) -> str:
         return (str): The key, e.g. "huc2-14-15". Order, duplicates and zero padding don't change it.
     """
 
-    return "huc2-" + "-".join(
-        str(huc2) for huc2 in sorted({int(huc2) for huc2 in huc2s})
-    )
+    return "huc2-" + "-".join(str(huc2) for huc2 in sorted({int(huc2) for huc2 in huc2s}))
 
 
-def is_newer(output_path: str, source_paths: list[str]) -> bool:
+def is_newer(output_path: str | Path, source_paths: Sequence[str | Path]) -> bool:
     """
     Checks whether a cached file exists and was written after all of its sources were last modified.
 
     Parameters:
-        output_path (str): The cached file.
-        source_paths (list[str]): The files it was built from.
+        output_path (str | Path): The cached file.
+        source_paths (Sequence[str | Path]): The files it was built from.
 
     Returns:
         current (bool): False when the file is missing, a source is missing or newer, or there are no sources.
     """
 
-    if not source_paths or not path.exists(output_path):
+    output_path = Path(output_path)
+    source_paths = [Path(source_path) for source_path in source_paths]
+
+    if not source_paths or not output_path.exists():
         return False
-    if not all(path.exists(source_path) for source_path in source_paths):
+    if not all(source_path.exists() for source_path in source_paths):
         return False
 
-    return path.getmtime(output_path) > max(
-        path.getmtime(source_path) for source_path in source_paths
-    )
+    return output_path.stat().st_mtime > max(source_path.stat().st_mtime for source_path in source_paths)
 
 
-def normalize_raster(
-    raster_path: str,
-    output_path: str,
-    method: str = "minmax",
-) -> str:
+def normalize(data: NDArray[numpy.float32], method: str) -> NDArray[numpy.float32]:
     """
-    Normalizes the supplied raster to [0, 1].
+    Scales the valid cells of a layer to [0, 1].
 
     "minmax" scales valid cells linearly from their minimum to their maximum. "log1p" clamps negatives to 0, applies
-    log1p, then scales the same way. Nodata cells are NaN in the output.
+    log1p, then scales the same way. NaN cells stay NaN.
 
     Parameters:
-        raster_path (str): The path to the input raster.
-        output_path (str): The path to the output file.
-        method (str = "minmax"): The normalization method, one of "minmax" or "log1p".
+        data (NDArray[numpy.float32]): The layer, NaN as nodata.
+        method (str): The normalization method, one of "minmax" or "log1p".
 
     Returns:
-        output_path (str): The path to the output file.
+        result (NDArray[numpy.float32]): The normalized layer.
     """
 
-    with rasterio.open(raster_path) as src:
-        data = src.read(1).astype(numpy.float32)
-        profile = src.profile.copy()
-        nodata = src.nodata
-
-    # build a mask of cells that carry real data
-    if nodata is not None and not numpy.isnan(float(nodata)):
-        valid = data != nodata
-    else:
-        valid = ~numpy.isnan(data)
-
+    valid = ~numpy.isnan(data)
     result = numpy.full(data.shape, numpy.nan, dtype=numpy.float32)
 
     if method == "minmax":
@@ -442,7 +370,6 @@ def normalize_raster(
             result[valid] = 0.0
 
     elif method == "log1p":
-        # clip negatives to 0 before log1p (counts/densities are non-negative)
         log_data = numpy.log1p(numpy.maximum(data, 0.0))
         low = float(numpy.nanmin(log_data[valid]))
         high = float(numpy.nanmax(log_data[valid]))
@@ -452,98 +379,83 @@ def normalize_raster(
             result[valid] = 0.0
 
     else:
-        raise ValueError(
-            f"Unknown normalization method {method!r}. "
-            "Choose from 'minmax' or 'log1p'."
-        )
+        raise ValueError(f"Unknown normalization method {method!r}. Choose from 'minmax' or 'log1p'.")
 
     # clamp to [0, 1] to guard against floating-point drift
     numpy.clip(result, 0.0, 1.0, out=result)
     result[~valid] = numpy.nan
 
-    profile.update(dtype=numpy.float32, nodata=numpy.nan)
-    with rasterio.open(output_path, "w", **profile) as output_raster:
-        output_raster.write(result, 1)
-
-    return output_path
+    return result
 
 
 def prepare_raster_layer(
-    output_directory: str,
-    raster_path: str,
+    output_directory: Path,
+    raster_path: Path,
     reprojected_crs: str,
     year: int,
     raster_title: str,
     template_raster_path: str,
     raster_mask: NDArray[numpy.bool_],
-    filter_keys: Optional[list[int]] = None,
-    resampling_method: enums.Resampling = enums.Resampling.sum,
+    resampling_method: enums.Resampling,
+    filter_keys: Sequence[int] | None = None,
     normalization_method: str = "log1p",
-    mask_key: str = "",
-) -> str:
+) -> NDArray[numpy.float32]:
     """
-    Prepares a raster for use in the disaggregation model.
+    Prepares an ancillary layer on the template grid.
 
-    Steps, each writing an intermediate file under output_directory:
+    Steps:
       1. Extrapolate the raster from earlier years if raster_path doesn't exist (see extrapolate_raster).
-      2. Filter to filter_keys, if given (filtered/).
-      3. Reproject and resample onto the template grid (reprojected/).
-      4. Clip to raster_mask (clipped/).
-      5. Normalize (normalized/<normalization_method>/).
-    Steps 1-3 are cached: the reprojected file is named after everything it depends on (year, title, filter keys,
-    resampling method and template) and reused while it's newer than its sources (the raster, or the earlier years an
-    extrapolated raster is fitted to, and the template). Steps 4-5 depend on the mask and always rerun.
+      2. Filter to filter_keys, if given. Writes output_directory/filtered/.
+      3. Reproject and resample onto the template grid. Writes output_directory/reprojected/.
+      4. Set the cells outside raster_mask to NaN.
+      5. Normalize (see normalize).
+    Steps 1-3 are cached. The reprojected file is named after its inputs: year, title, filter keys, resampling method
+    and template. It's reused while it's newer than its sources: the raster (or the earlier years that an extrapolated
+    raster is fitted to) and the template. The name doesn't change with the code, so delete the reprojected files
+    after a change to steps 1-3. Steps 4-5 run in memory on every call, because concurrent runs with other masks would
+    otherwise share their files.
 
     Parameters:
-        output_directory (str): The output directory of the prepared raster.
-        raster_path (str): The unprepared raster path.
-        reprojected_crs (str): The target CRS for the generated rasters.
-        year (int): The year to generate rasters for.
+        output_directory (Path): The directory of the cached files.
+        raster_path (Path): The unprepared raster path.
+        reprojected_crs (str): The CRS of the template.
+        year (int): The year of the raster.
         raster_title (str): The title of the raster for use in the filename.
         template_raster_path (str): The path to the template raster.
         raster_mask (NDArray[numpy.bool_]): True for the template cells to keep (see rasterize_mask).
-        filter_keys (Optional[list[int]] = None): A list of integer values to filter the raster to.
-        resampling_method (enums.Resampling = enums.Resampling.sum): The raster resampling method to use.
-        normalization_method (str = "log1p"): The normalization method to use.
-        mask_key (str = ""): A name for the mask, added to the clipped and normalized filenames. Use it when the mask
-            changes between runs, so that concurrent runs with different masks don't overwrite each other's files.
+        resampling_method (enums.Resampling): The resampling method. Use sum for a total per cell, and average for a
+            value per area.
+        filter_keys (Sequence[int] | None = None): The values to keep (see filter_raster). All values when None.
+        normalization_method (str = "log1p"): The normalization method (see normalize).
 
     Returns:
-        normalized_raster_path (str): The path to the prepared raster.
+        layer (NDArray[numpy.float32]): The prepared layer, NaN as nodata.
     """
 
-    # e.g. [81, 82] -> "81-82", keeping brackets and spaces out of filenames
-    filter_key = (
-        "" if filter_keys is None else "_" + "-".join(str(key) for key in filter_keys)
-    )
-    template_key = path.splitext(path.basename(template_raster_path))[0]
-    mask_suffix = f"_{mask_key}" if mask_key else ""
+    # e.g. (81, 82) -> "81-82", keeping brackets and spaces out of filenames
+    filter_key = "" if filter_keys is None else "_" + "-".join(str(key) for key in filter_keys)
+    template_key = Path(template_raster_path).stem
 
-    reprojected_directory = path.join(output_directory, "reprojected")
-    os.makedirs(reprojected_directory, exist_ok=True)
-    reprojected_raster_path = path.join(
-        reprojected_directory,
-        f"{year}_{raster_title}{filter_key}_{resampling_method.name}_{template_key}.tif",
+    reprojected_directory = output_directory / "reprojected"
+    reprojected_directory.mkdir(parents=True, exist_ok=True)
+    reprojected_raster_path = (
+        reprojected_directory / f"{year}_{raster_title}{filter_key}_{resampling_method.name}_{template_key}.tif"
     )
 
     source_paths = (
-        [raster_path]
-        if path.exists(raster_path)
-        else list(find_sibling_rasters(raster_path, year).values())
+        [raster_path] if raster_path.exists() else list(find_sibling_rasters(str(raster_path), year).values())
     )
 
-    if not is_newer(reprojected_raster_path, source_paths + [template_raster_path]):
-        if not path.exists(raster_path):
+    if not is_newer(reprojected_raster_path, [*source_paths, template_raster_path]):
+        if not raster_path.exists():
             raster_path = extrapolate_raster(raster_path, year)
 
         if filter_keys is not None:
-            filtered_directory = path.join(output_directory, "filtered")
-            os.makedirs(filtered_directory, exist_ok=True)
+            filtered_directory = output_directory / "filtered"
+            filtered_directory.mkdir(parents=True, exist_ok=True)
 
             raster_path = filter_raster(
-                raster_path,
-                filter_keys,
-                path.join(filtered_directory, f"{year}_{raster_title}{filter_key}.tif"),
+                raster_path, filter_keys, filtered_directory / f"{year}_{raster_title}{filter_key}.tif"
             )
 
         reproject_raster(
@@ -554,27 +466,10 @@ def prepare_raster_layer(
             resampling_method=resampling_method,
         )
 
-    clipped_directory = path.join(output_directory, "clipped")
-    os.makedirs(clipped_directory, exist_ok=True)
+    layer = read_raster(reprojected_raster_path, Grid.from_raster(template_raster_path))
+    layer[~raster_mask] = numpy.nan
 
-    clipped_raster_path = clip_raster(
-        reprojected_raster_path,
-        raster_mask,
-        path.join(clipped_directory, f"{year}_{raster_title}{mask_suffix}.tif"),
-    )
-
-    normalized_directory = path.join(
-        output_directory, "normalized", normalization_method
-    )
-    os.makedirs(normalized_directory, exist_ok=True)
-
-    normalized_raster_path = normalize_raster(
-        clipped_raster_path,
-        path.join(normalized_directory, f"{year}_{raster_title}{mask_suffix}.tif"),
-        normalization_method,
-    )
-
-    return normalized_raster_path
+    return normalize(layer, normalization_method)
 
 
 def rasterize_mask(geometries: geopandas.GeoSeries, grid: Grid) -> NDArray[numpy.bool_]:
@@ -610,9 +505,9 @@ def rasterize_zones(
     """
     Rasterizes polygons into compact zone indices for vectorized per-zone operations.
 
-    Cells are labeled 0 outside all polygons and i for the zone zone_ids_unique[i - 1], so per-zone
-    sums are numpy.bincount(zones.ravel(), weights, minlength=len(zone_ids_unique) + 1) and per-zone
-    values broadcast back to cells as values[zones]. Polygons sharing an ID share one zone.
+    Cells are labeled 0 outside all polygons, and i for the zone zone_ids_unique[i - 1]. Per-zone sums are therefore
+    numpy.bincount(zones.ravel(), weights, minlength=len(zone_ids_unique) + 1), and per-zone values broadcast back to
+    cells as values[zones]. Polygons sharing an ID share one zone.
 
     Parameters:
         geometries (geopandas.GeoSeries): The zone polygons, in the raster CRS.
@@ -625,22 +520,19 @@ def rasterize_zones(
         zone_ids_unique (NDArray[numpy.int64]): The zone ID for each index, offset by one.
     """
 
-    codes, zone_ids_unique = pandas.factorize(
-        numpy.asarray(zone_ids).astype(numpy.int64)
-    )
+    codes, zone_ids_unique = pandas.factorize(numpy.asarray(zone_ids).astype(numpy.int64))
     values = (codes + 1).tolist()
 
-    # rasterio holds every shape as nested Python coordinate tuples until it burns them (~7 GB for HUC-2s 14-18 at
-    # HUC-12), so burn in consecutive batches of ~1M coordinates; later polygons still overwrite earlier ones, as in
-    # one call (see FIXES.md, fix 29)
+    # rasterio holds every shape as nested Python coordinate tuples until it burns them, so burn in consecutive batches
+    # of about 1M coordinates. Later polygons still overwrite earlier ones, as in one call
     batches = numpy.cumsum(shapely.get_num_coordinates(geometries.values)) // 1_000_000
     starts = numpy.flatnonzero(numpy.diff(batches, prepend=-1))
     ends = numpy.append(starts[1:], len(values))
 
     zones = numpy.zeros(shape, dtype=numpy.int32)
-    for start, end in zip(starts, ends):
+    for start, end in zip(starts, ends, strict=True):
         features.rasterize(
-            zip(geometries.iloc[start:end], values[start:end]),
+            zip(geometries.iloc[start:end], values[start:end], strict=True),
             out=zones,
             transform=transform,
             all_touched=True,
@@ -649,12 +541,12 @@ def rasterize_zones(
     return zones, numpy.asarray(zone_ids_unique, dtype=numpy.int64)
 
 
-def read_raster(raster_path: str, grid: Grid) -> NDArray[Any]:
+def read_raster(raster_path: str | Path, grid: Grid) -> NDArray[Any]:
     """
     Reads the first band of a raster that must lie on the given grid.
 
     Parameters:
-        raster_path (str): The path to the raster.
+        raster_path (str | Path): The path to the raster.
         grid (Grid): The grid the raster must be on.
 
     Returns:
@@ -668,27 +560,26 @@ def read_raster(raster_path: str, grid: Grid) -> NDArray[Any]:
 
 
 def read_statistics(
-    huc2s: list[str],
+    huc2s: Sequence[str],
     huc_level: int,
     case_study: str,
     year: int,
-    columns: Optional[list[str]] = None,
+    columns: list[str] | None = None,
 ) -> geopandas.GeoDataFrame:
     """
     Reads the merged water use statistics (input/statistics/<huc2>/<huc_level>/<case_study>/<year>.gpkg) of the
     given HUC-2s, sorted by HUC ID.
 
     The row order decides which HUC gets a shared boundary cell, because rasterize_zones gives the cell to the later
-    polygon. The sort makes the zones independent of the order of huc2s and of the row order of the WBD shapefiles.
-    The WBD release of 2026-09-02 kept the HUC IDs and polygons of HUC-2 4 but changed their row order. Without the
-    sort, that change moved 1,983 of its 849,632 cells to a different HUC-12.
+    polygon. The sort makes the zones independent of the order of huc2s and of the row order of the WBD shapefiles. A
+    WBD release can change that row order and keep the same HUC IDs and polygons.
 
     Parameters:
-        huc2s (list[str]): A list of HUC2 numerical ID strings.
+        huc2s (Sequence[str]): The HUC-2 IDs.
         huc_level (int): The HUC level of the statistics.
         case_study (str): The case study.
         year (int): The statistics year.
-        columns (Optional[list[str]] = None): The columns to read. All when None. A list must include huc<huc_level>.
+        columns (list[str] | None = None): The columns to read. All when None. A list must include huc<huc_level>.
 
     Returns:
         statistics (geopandas.GeoDataFrame): The statistics, sorted by HUC ID, with a fresh index.
@@ -697,24 +588,14 @@ def read_statistics(
     statistics = pandas.concat(
         [
             geopandas.read_file(
-                path.join(
-                    "input",
-                    "statistics",
-                    huc2,
-                    str(huc_level),
-                    case_study,
-                    f"{year}.gpkg",
-                ),
-                columns=columns,
+                Path("input", "statistics", huc2, str(huc_level), case_study, f"{year}.gpkg"), columns=columns
             )
             for huc2 in huc2s
         ],
         ignore_index=True,
     )
 
-    return geopandas.GeoDataFrame(
-        statistics.sort_values(f"huc{huc_level}", ignore_index=True)
-    )
+    return geopandas.GeoDataFrame(statistics.sort_values(f"huc{huc_level}", ignore_index=True))
 
 
 def build_zones(
@@ -765,49 +646,47 @@ def build_zones(
 
 
 def reproject_raster(
-    raster_path: str,
+    raster_path: Path,
     reprojected_crs: str,
-    output_path: str,
+    output_path: Path,
     reference_raster_path: str,
     dtype: type = numpy.float32,
     nodata: Any = numpy.nan,
     resampling_method: enums.Resampling = enums.Resampling.mode,
-) -> str:
+) -> Path:
     """
     Reprojects (and resamples if necessary) the provided raster onto the reference raster's grid.
 
     Parameters:
-        raster_path (str): The path to the raster to reproject.
+        raster_path (Path): The path to the raster to reproject.
         reprojected_crs (str): The target CRS for the generated rasters.
-        output_path (str): The path to the output file.
+        output_path (Path): The path to the output file.
         reference_raster_path (str): The path to the reference raster.
         dtype (type = numpy.float32): The datatype the raster should be in.
         nodata (Any = numpy.nan): The nodata value to use in the raster.
         resampling_method (enums.Resampling = enums.Resampling.mode): The raster resampling method to use.
 
     Returns:
-        output_path (str): The path to the output file.
+        output_path (Path): The path to the output file.
     """
 
     with rasterio.open(raster_path) as original:
-        source = cast(numpy.ndarray, original.read(1))
+        source = cast(NDArray[Any], original.read(1))
         profile = cast(dict[str, Any], original.profile)
         source_transform = cast(affine.Affine, original.transform)
         source_crs = original.crs
     profile.update(compress="lzw", driver="GTiff")
 
-    # replace the source's own nodata value with nodata, so missing cells enter resampling as NaN
+    # replace the source's own nodata value with nodata, so missing cells enter resampling as NaN. The cast comes first,
+    # because numpy.where with a NaN turns an integer source into float64, twice the size of float32
     old_nodata = profile.get("nodata")
-    if old_nodata is not None and old_nodata != nodata:
-        if numpy.isnan(old_nodata):
-            mask = numpy.isnan(source)
-        else:
-            mask = source == old_nodata
-        source = numpy.where(mask, nodata, source)
-    profile.update(nodata=nodata)
-
-    source = source.astype(dtype, copy=False)
-    profile.update(dtype=dtype)
+    if old_nodata is not None:
+        missing = numpy.isnan(source) if numpy.isnan(old_nodata) else source == old_nodata
+        source = source.astype(dtype, copy=False)
+        source[missing] = nodata
+    else:
+        source = source.astype(dtype, copy=False)
+    profile.update(nodata=nodata, dtype=dtype)
 
     with rasterio.open(reference_raster_path) as reference:
         transform = cast(affine.Affine, reference.transform)
@@ -818,37 +697,37 @@ def reproject_raster(
 
     destination = numpy.empty((height, width), dtype)
 
+    # without src_nodata, one nodata source cell makes the whole target cell nodata under sum and average. Without
+    # dst_nodata, target cells outside the source get 0, not nodata
     warp.reproject(
         source,
         destination,
         src_transform=source_transform,
         src_crs=source_crs,
+        src_nodata=nodata,
         dst_transform=transform,
         dst_crs=reprojected_crs,
+        dst_nodata=nodata,
         resampling=resampling_method,
     )
 
-    outfile = cast(io.DatasetWriter, rasterio.open(output_path, "w", **profile))
-    outfile.write(destination, 1)
-    outfile.close()
+    _write_atomically(output_path, destination, profile)
 
     return output_path
 
 
 def templatize_geometries(
-    geometry_paths: list[str], reprojected_crs: str, cell_size: int, output_path: str
+    geometry_paths: Sequence[str], reprojected_crs: str, cell_size: int, output_path: str
 ) -> str:
     """
     Rasterizes the combined extent of the provided geometries into a binary template raster.
 
     The grid starts at the top-left corner of the geometries' bounding box and holds only whole cells. It can stop less
     than one cell short of the east and south bounds. Cells touching a geometry hold 1, and other cells hold 0 (nodata).
-
-    The function writes to a temporary file in the same directory, then renames it. An interrupted write therefore
-    can't leave a partial raster at output_path.
+    An interrupted write can't leave a partial raster at output_path (see _write_atomically).
 
     Parameters:
-        geometry_paths (list[str]): A list of filepaths to geometry files.
+        geometry_paths (Sequence[str]): The paths to the geometry files.
         reprojected_crs (str): The target CRS for the produced template.
         cell_size (int): The target cell size (in CRS units) for the produced template.
         output_path (str): The path to the output file.
@@ -857,9 +736,7 @@ def templatize_geometries(
         output_path (str): The path to the output file.
     """
 
-    geometries = pandas.concat(
-        [geopandas.read_file(geometry_path) for geometry_path in geometry_paths]
-    )
+    geometries = pandas.concat([geopandas.read_file(geometry_path) for geometry_path in geometry_paths])
     geometries = geopandas.GeoDataFrame(geometries, geometry="geometry")
     geometries.to_crs(reprojected_crs, inplace=True)
 
@@ -867,7 +744,6 @@ def templatize_geometries(
     raster_width = int(abs(max_x - min_x) / cell_size)
     raster_height = int(abs(max_y - min_y) / cell_size)
 
-    # calculate the template transform from the new bounds and cell size
     new_transform = rasterio_transform.from_origin(min_x, max_y, cell_size, cell_size)
 
     raster = cast(
@@ -892,21 +768,33 @@ def templatize_geometries(
         "width": raster_width,
     }
 
-    # the process ID keeps concurrent runs from sharing a temporary file
-    temporary_path = f"{output_path}.{os.getpid()}.tmp"
-    with rasterio.open(temporary_path, "w", **raster_metadata) as output_raster:
-        output_raster.write(raster, 1)
-    os.replace(temporary_path, output_path)
+    _write_atomically(output_path, raster, raster_metadata)
 
     return output_path
+
+
+def write_mask(mask: geopandas.GeoDataFrame, output_path: Path) -> None:
+    """
+    Writes a geometric mask to a GeoPackage. The layer takes its name from the file.
+
+    The file is written in a temporary directory, then moved, because is_newer accepts any file that exists.
+
+    Parameters:
+        mask (geopandas.GeoDataFrame): The mask.
+        output_path (Path): The path to the output file.
+    """
+
+    with tempfile.TemporaryDirectory(dir=output_path.parent) as temporary_directory:
+        temporary_path = Path(temporary_directory, output_path.name)
+        mask.to_file(temporary_path)
+        temporary_path.replace(output_path)
 
 
 def write_raster(output_path: str, data: NDArray[numpy.float32], grid: Grid) -> str:
     """
     Writes a single-band float32 GeoTIFF on the grid, with NaN as nodata.
 
-    The function writes to a temporary file in the same directory, then renames it. An interrupted write therefore
-    can't leave a partial raster at output_path.
+    An interrupted write can't leave a partial raster at output_path (see _write_atomically).
 
     Parameters:
         output_path (str): The path to the output file.
@@ -917,10 +805,25 @@ def write_raster(output_path: str, data: NDArray[numpy.float32], grid: Grid) -> 
         output_path (str): The path to the output file.
     """
 
-    # the process ID keeps concurrent runs from sharing a temporary file
-    temporary_path = f"{output_path}.{os.getpid()}.tmp"
-    with rasterio.open(temporary_path, "w", **grid.profile()) as output_raster:
-        output_raster.write(data, 1)
-    os.replace(temporary_path, output_path)
+    _write_atomically(output_path, data, grid.profile())
 
     return output_path
+
+
+def _write_atomically(output_path: str | Path, data: NDArray[Any], profile: dict[str, Any]) -> None:
+    """
+    Writes a single-band raster to a temporary file in the same directory, then renames it to output_path.
+
+    is_newer accepts any file that exists, so a cached raster must appear only when complete.
+
+    Parameters:
+        output_path (str | Path): The path to the output file.
+        data (NDArray[Any]): The (height, width) values.
+        profile (dict[str, Any]): The rasterio profile of the output file.
+    """
+
+    # the process ID keeps concurrent runs from sharing a temporary file
+    temporary_path = Path(f"{output_path}.{os.getpid()}.tmp")
+    with rasterio.open(temporary_path, "w", **profile) as output_raster:
+        output_raster.write(data, 1)
+    temporary_path.replace(output_path)
