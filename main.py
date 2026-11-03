@@ -20,8 +20,9 @@ Terms:
     support: The cells that can receive water. Only irr uses a support limit.
 
 Stages:
-    1. Data preparation: Downloads the HUC boundaries and the NLCD rasters. Builds the template raster. Merges the
-       statistics with the HUC geometries. Prepares the ancillary layers of the case study on the template grid.
+    1. Data preparation: Downloads the HUC boundaries, the NLCD rasters and the state boundaries for the figure.
+       Builds the template raster. Merges the statistics with the HUC geometries. Prepares the ancillary layers of the
+       case study on the template grid.
     2. Dasymetric mapping: Spreads each HUC total over its cells in proportion to the first ancillary layer.
     3. Pycnophylactic interpolation: Smooths the dasymetric estimates and rescales them to the HUC totals.
     4. Spatial disaggregation: Refines the estimates with alternating CNN and random forest iterations. Each iteration
@@ -37,8 +38,8 @@ their output rasters, stage 5 writes comparison files and metrics, and stage 6 w
 Stages 2-4 keep each HUC total only if the HUC has cells that can hold its water. A HUC with no such cells loses its
 total, and no later stage restores it. Evaluation reports this water as missing.
 
-Inputs: The pipeline downloads only the HUC boundaries and the NLCD rasters. All other inputs must be in input/ before
-the run, including the state boundaries for the figure.
+Inputs: The pipeline downloads only the HUC boundaries, the NLCD rasters and the state boundaries. All other inputs
+must be in input/ before the run.
 
 HUC levels: One run uses one HUC level for all stages. Earlier runs used HUC-12 initial estimates and HUC-8
 disaggregation. In tests on irr 2000 and pws-tot 2000, that setup lost the HUC-12 totals. Its placement scores at
@@ -53,8 +54,7 @@ HUC-12 were about equal to those of a run at level 8.
 import argparse
 import time
 import warnings
-
-import numpy
+from pathlib import Path
 
 import dasymetric_mapping
 import disaggregation
@@ -95,8 +95,8 @@ def main(
     huc2s: list[str],
     huc_level: int,
     year: int,
-    bottom_panel_huc2s: list[str],
-):
+    detail_huc2s: list[str],
+) -> None:
     """
     Runs all pipeline stages for one case study and one year.
 
@@ -110,17 +110,13 @@ def main(
         huc2s (list[str]): The HUC-2 watersheds of the run, without zero-padding (for example "1", not "01").
         huc_level (int): The HUC level of the statistics, the initial estimates, the disaggregation and the evaluation.
         year (int): The year to run.
-        bottom_panel_huc2s (list[str]): The HUC-2 watersheds in the bottom panel of the figure. They must be in huc2s.
-            An empty list omits the panel.
+        detail_huc2s (list[str]): The HUC-2 watersheds that the detail view of the figure zooms in on. They must be
+            in huc2s. An empty list omits the detail view.
     """
 
     start_time = time.perf_counter()
 
     settings = raster_utilities.CASE_STUDIES[case_study]
-
-    # the figure is the last stage, so this check runs first. Otherwise a missing state boundary file or a bad bottom
-    # panel HUC-2 would stop the run after all other stages
-    figure_utilities.check_inputs(huc2s, bottom_panel_huc2s)
 
     # stage 1: data preparation
     download_huc_boundaries.run(huc2s)
@@ -130,6 +126,10 @@ def main(
     )
 
     download_nlcd_rasters.run(year)
+
+    # the figure is the last stage, so its download runs here. Otherwise a failed download would stop the run after
+    # all other stages
+    figure_utilities.download_state_boundaries()
 
     # the merge scripts accept a set of HUC levels. A run below HUC-12 also needs the HUC-12 statistics, which only
     # the holdout score reads
@@ -195,29 +195,11 @@ def main(
         year=year,
         columns=[f"huc{huc_level}", "water_mgd", "geometry"],
     )
-    # the raster stores EPSG:5070 as WKT, which to_crs doesn't treat as the same CRS. Without this test, to_crs would
-    # run an identity transform that copies every polygon, several GB at CONUS HUC-12
-    if statistics.crs != grid.crs:
-        statistics = statistics.to_crs(grid.crs)
-    zones, zone_hucs = raster_utilities.rasterize_zones(
-        statistics.geometry,
-        statistics[f"huc{huc_level}"],
-        grid.shape,
-        grid.transform,
-    )
-    # the statistics store HUC IDs as strings with leading zeros, and zone_hucs holds integers
-    water_use_lookup = dict(
-        zip(
-            statistics[f"huc{huc_level}"].astype(int),
-            statistics["water_mgd"],
-        )
+    zones, zone_hucs, zone_totals = raster_utilities.build_zones(
+        statistics, huc_level, grid
     )
     # later stages in this function need only the IDs and the totals, so this line releases the geometries
     del statistics
-
-    # each zone's total, indexed like zones (index 0 is outside all HUCs)
-    zone_totals = numpy.full(len(zone_hucs) + 1, numpy.nan)
-    zone_totals[1:] = [water_use_lookup[huc] for huc in zone_hucs]
 
     # stage 2: dasymetric mapping. Layer 0 is the weight layer: NLCD planted/cultivated (irr) or NLCD developed (pws)
     dasymetric_raster = dasymetric_mapping.run(
@@ -285,7 +267,7 @@ def main(
     figure_utilities.run(
         disaggregated_raster,
         grid,
-        bottom_panel_huc2s,
+        detail_huc2s,
         huc_level=huc_level,
         case_study=case_study,
         year=year,
@@ -313,27 +295,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--huc2s",
         nargs="+",
-        default=[
-            "1",
-            "2",
-            "3",
-            "4",
-            "5",
-            "6",
-            "7",
-            "8",
-            "9",
-            "10",
-            "11",
-            "12",
-            "13",
-            "14",
-            "15",
-            "16",
-            "17",
-            "18",
-        ],  # CONUS
-        help='The HUC-2 watersheds of the run, without zero-padding (for example "1", not "01").',
+        choices=raster_utilities.HUC2S,
+        default=list(raster_utilities.HUC2S),
+        metavar="HUC2",
+        help='The HUC-2 watersheds of the run, from 1 to 18, without zero-padding (for example "1", not "01"). The '
+        "default is all 18 (CONUS).",
     )
     parser.add_argument(
         "--huc_level",
@@ -355,13 +321,20 @@ if __name__ == "__main__":
         help="The output cell size, in CRS units.",
     )
     parser.add_argument(
-        "--bottom_panel_huc2s",
+        "--detail_huc2s",
         nargs="*",
         default=["14", "15"],
-        help="The HUC-2 watersheds in the bottom panel of the figure. They must be in --huc2s, so a run without "
-        "14 and 15 must set this option. Pass no values to omit the panel.",
+        metavar="HUC2",
+        help="The HUC-2 watersheds that the detail view of the figure zooms in on. They must be in --huc2s, so a run "
+        "without 14 and 15 must set this option. Pass no values to omit the detail view.",
     )
     args = parser.parse_args()
+
+    # all paths are relative to the repository root. From another folder, stage 1 would download several GB into a new
+    # input/ there before a missing file stops the run
+    repository_root = Path(__file__).resolve().parent
+    if Path.cwd().resolve() != repository_root:
+        parser.error(f"run main.py from the repository root, {repository_root}.")
 
     # the valid years depend on --case_study, so choices= can't express them. parser.error stops before any stage runs
     settings = raster_utilities.CASE_STUDIES[args.case_study]
@@ -370,6 +343,15 @@ if __name__ == "__main__":
             f"--year: {args.case_study} statistics cover {settings.first_year}-{settings.last_year}, not {args.year}."
         )
 
+    # choices= accepts a repeated value, and a repeated HUC-2 would count its statistics twice in evaluation
+    if len(set(args.huc2s)) != len(args.huc2s):
+        parser.error("--huc2s: a HUC-2 is repeated.")
+
+    # only the run's HUC-2s are on the grid, so the detail view of another HUC-2 would be empty
+    missing_huc2s = sorted(set(args.detail_huc2s) - set(args.huc2s))
+    if missing_huc2s:
+        parser.error(f"--detail_huc2s: {missing_huc2s} aren't in --huc2s.")
+
     main(
         case_study=args.case_study,
         reprojected_crs=args.crs,
@@ -377,5 +359,5 @@ if __name__ == "__main__":
         huc2s=args.huc2s,
         huc_level=args.huc_level,
         year=args.year,
-        bottom_panel_huc2s=args.bottom_panel_huc2s,
+        detail_huc2s=args.detail_huc2s,
     )

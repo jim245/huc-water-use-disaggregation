@@ -32,22 +32,22 @@ Outputs are placed in `output/huc{huc_level}/{case_study}/{year}/{case_study}_hu
 The [main.py](./main.py) orchestrator script can be invoked as follows:
 
 ```text
-usage: main.py [-h] [--case_study {irr,pws-cu,pws-gw,pws-sw,pws-tot}] [--year YEAR] [--huc2s HUC2S [HUC2S ...]] [--huc_level {2,4,6,8,10,12}] [--crs CRS] [--cell_size CELL_SIZE] [--bottom_panel_huc2s [BOTTOM_PANEL_HUC2S ...]]
+usage: main.py [-h] [--case_study {irr,pws-cu,pws-gw,pws-sw,pws-tot}] [--year YEAR] [--huc2s HUC2 [HUC2 ...]] [--huc_level {2,4,6,8,10,12}] [--crs CRS] [--cell_size CELL_SIZE] [--detail_huc2s [HUC2 ...]]
 
 options:
   -h, --help            show this help message and exit
   --case_study {irr,pws-cu,pws-gw,pws-sw,pws-tot}
                         The case study to run. It selects the statistics and the ancillary layers.
   --year YEAR           The year to run. It selects the statistics and the ancillary layers. pws-cu covers 2009-2020, and all other case studies cover 2000-2020.
-  --huc2s HUC2S [HUC2S ...]
-                        The HUC-2 watersheds of the run, without zero-padding (for example "1", not "01").
+  --huc2s HUC2 [HUC2 ...]
+                        The HUC-2 watersheds of the run, from 1 to 18, without zero-padding (for example "1", not "01"). The default is all 18 (CONUS).
   --huc_level {2,4,6,8,10,12}
                         The HUC level of all stages. The source statistics stop at level 12. The project tested only levels 8 and 12.
   --crs CRS             The coordinate reference system of all spatial operations.
   --cell_size CELL_SIZE
                         The output cell size, in CRS units.
-  --bottom_panel_huc2s [BOTTOM_PANEL_HUC2S ...]
-                        The HUC-2 watersheds in the bottom panel of the figure. They must be in --huc2s, so a run without 14 and 15 must set this option. Pass no values to omit the panel.
+  --detail_huc2s [HUC2 ...]
+                        The HUC-2 watersheds that the detail view of the figure zooms in on. They must be in --huc2s, so a run without 14 and 15 must set this option. Pass no values to omit the detail view.
 ```
 
 Run each case study and year twice: `--huc_level 12` for the product, and `--huc_level 8` for its holdout score. Near-perfect scores in `metrics.csv` only show that HUC totals are preserved. The holdout score measures how well the method places water from HUC-8 down to HUC-12. It is a proxy, and it does not measure the error of individual cells.
@@ -63,6 +63,7 @@ python main.py --case_study pws-cu --year 2009 --huc2s 14 15 --huc_level 12 --cr
 ## Boundaries
 
 - [Watershed Boundary Dataset](https://www.usgs.gov/national-hydrography/watershed-boundary-dataset)
+- [Census Cartographic Boundary Files](https://www.census.gov/geographies/mapping-files/time-series/geo/cartographic-boundary.html) (2024 states at 1:500,000, for the figure)
 
 ## Water Use Statistics
 
