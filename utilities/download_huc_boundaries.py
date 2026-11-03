@@ -11,7 +11,7 @@ from urllib import request
 
 from utilities import raster_utilities
 
-# the download stops with an error if the server sends no data for this many seconds
+# applies to each socket read, not to the whole download
 DOWNLOAD_TIMEOUT_SECONDS = 60
 
 EXTRACTED_PREFIXES = tuple(
