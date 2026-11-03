@@ -61,7 +61,7 @@ def merge(
         for huc_level in huc_levels:
             directory = Path("input", "statistics", huc2, str(huc_level), case_study)
             huc_path = Path("input", "HUC", huc2, "Shape", f"WBDHU{huc_level}.shp")
-            sources = [source_path, Path(huc12_crosswalk.CROSSWALK_PATH), huc_path]
+            sources = [source_path, huc12_crosswalk.CROSSWALK_PATH, huc_path]
             pending.append((huc2, huc_level, directory, huc_path, stale_years(directory, years, sources)))
     if not any(huc_years for *_, huc_years in pending):
         return

@@ -1,8 +1,9 @@
 # HUC-12 codes in the water use statistics that are not in the downloaded WBD, and the current HUC-12s that cover them.
-# The statistics use a WBD release from before the 2021 split of HUC-8 01090005 and a few local redrawings.
-# old_area_sqkm is the old polygon's area and overlap_sqkm its overlap with the new polygon, both from niwaa_final_area.csv in
-# Blodgett, D.L. (2025), Comparison of four snapshots of Watershed Boundary Dataset Twelve-Digit Hydrologic Units,
-# U.S. Geological Survey data release, https://doi.org/10.5066/P1HR67C5 (CC0). Overlaps below 0.1% of the old area are left out.
+# The statistics use a WBD release that is older than the 2021 split of HUC-8 01090005 and some local redrawings.
+# old_area_sqkm is the area of the old polygon. overlap_sqkm is the area of its overlap with the new polygon.
+# Both come from niwaa_final_area.csv in Blodgett, D.L. (2025), Comparison of four snapshots of Watershed Boundary Dataset
+# Twelve-Digit Hydrologic Units, U.S. Geological Survey data release, https://doi.org/10.5066/P1HR67C5 (CC0).
+# The table does not include overlaps that are less than 0.1% of the old area.
 old_huc12,new_huc12,old_area_sqkm,overlap_sqkm
 010900050101,011000070101,158.125,158.125
 010900050102,011000070102,74.094,74.094
