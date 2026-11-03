@@ -4,6 +4,7 @@ Utility for handling common raster operations.
 
 import glob
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 from os import path
 from typing import Any, Optional, cast
@@ -30,6 +31,9 @@ from rasterio import warp
 # can't supply levels 14 and 16. The project tested only levels 8 and 12
 HUC_LEVELS = [2, 4, 6, 8, 10, 12]
 STATISTICS_HUC_LEVEL = 12
+
+# the HUC-2 regions of the conterminous US, without zero-padding. The source statistics have no regions above 18
+HUC2S: tuple[str, ...] = tuple(str(huc2) for huc2 in range(1, 19))
 
 
 @dataclass(frozen=True)
@@ -358,12 +362,12 @@ def generate_mask(
     return primary_mask
 
 
-def huc2_cache_key(huc2s: list[str]) -> str:
+def huc2_cache_key(huc2s: Sequence[str]) -> str:
     """
     Builds a filename-safe key identifying a HUC-2 selection, for naming files cached per selection.
 
     Parameters:
-        huc2s (list[str]): A list of HUC2 numerical ID strings.
+        huc2s (Sequence[str]): The HUC-2 IDs.
 
     Returns:
         return (str): The key, e.g. "huc2-14-15". Order, duplicates and zero padding don't change it.
@@ -672,39 +676,92 @@ def read_statistics(
 ) -> geopandas.GeoDataFrame:
     """
     Reads the merged water use statistics (input/statistics/<huc2>/<huc_level>/<case_study>/<year>.gpkg) of the
-    given HUC-2s, concatenated in huc2s order. The order decides which HUC gets a shared boundary cell when the
-    polygons are rasterized (the later one), so every stage must read them in the same order.
+    given HUC-2s, sorted by HUC ID.
+
+    The row order decides which HUC gets a shared boundary cell, because rasterize_zones gives the cell to the later
+    polygon. The sort makes the zones independent of the order of huc2s and of the row order of the WBD shapefiles.
+    The WBD release of 2026-09-02 kept the HUC IDs and polygons of HUC-2 4 but changed their row order. Without the
+    sort, that change moved 1,983 of its 849,632 cells to a different HUC-12.
 
     Parameters:
         huc2s (list[str]): A list of HUC2 numerical ID strings.
         huc_level (int): The HUC level of the statistics.
         case_study (str): The case study.
         year (int): The statistics year.
-        columns (Optional[list[str]] = None): The columns to read. All when None.
+        columns (Optional[list[str]] = None): The columns to read. All when None. A list must include huc<huc_level>.
 
     Returns:
-        statistics (geopandas.GeoDataFrame): The statistics, with a fresh index.
+        statistics (geopandas.GeoDataFrame): The statistics, sorted by HUC ID, with a fresh index.
     """
 
+    statistics = pandas.concat(
+        [
+            geopandas.read_file(
+                path.join(
+                    "input",
+                    "statistics",
+                    huc2,
+                    str(huc_level),
+                    case_study,
+                    f"{year}.gpkg",
+                ),
+                columns=columns,
+            )
+            for huc2 in huc2s
+        ],
+        ignore_index=True,
+    )
+
     return geopandas.GeoDataFrame(
-        pandas.concat(
-            [
-                geopandas.read_file(
-                    path.join(
-                        "input",
-                        "statistics",
-                        huc2,
-                        str(huc_level),
-                        case_study,
-                        f"{year}.gpkg",
-                    ),
-                    columns=columns,
-                )
-                for huc2 in huc2s
-            ],
-            ignore_index=True,
+        statistics.sort_values(f"huc{huc_level}", ignore_index=True)
+    )
+
+
+def build_zones(
+    statistics: geopandas.GeoDataFrame, huc_level: int, grid: Grid
+) -> tuple[NDArray[numpy.int32], NDArray[numpy.int64], NDArray[numpy.float64]]:
+    """
+    Rasterizes the HUCs of read_statistics onto the grid, and gives the water use total of each zone.
+
+    Every use of the same statistics must get its zones from this function, so all stages assign each cell to the same
+    HUC.
+
+    Parameters:
+        statistics (geopandas.GeoDataFrame): The statistics, with the huc<huc_level>, water_mgd and geometry columns.
+        huc_level (int): The HUC level of the statistics.
+        grid (Grid): The grid of the zones.
+
+    Returns:
+        zones (NDArray[numpy.int32]): The zone index raster (rasterize_zones), 0 outside all HUCs.
+        zone_hucs (NDArray[numpy.int64]): The HUC ID for each zone index, offset by one.
+        zone_totals (NDArray[numpy.float64]): The water use total of each zone, in mgd, indexed like zones. Index 0 is
+            NaN.
+    """
+
+    # the raster stores EPSG:5070 as WKT, which to_crs doesn't treat as the same CRS. Without this test, to_crs would
+    # run an identity transform that copies every polygon, several GB at CONUS HUC-12
+    if statistics.crs != grid.crs:
+        statistics = statistics.to_crs(grid.crs)
+    zones, zone_hucs = rasterize_zones(
+        statistics.geometry,
+        statistics[f"huc{huc_level}"],
+        grid.shape,
+        grid.transform,
+    )
+
+    # the statistics store HUC IDs as strings with leading zeros, and zone_hucs holds integers
+    water_use_lookup = dict(
+        zip(
+            statistics[f"huc{huc_level}"].astype(int),
+            statistics["water_mgd"],
+            strict=True,
         )
     )
+
+    zone_totals = numpy.full(len(zone_hucs) + 1, numpy.nan)
+    zone_totals[1:] = [water_use_lookup[huc] for huc in zone_hucs]
+
+    return zones, zone_hucs, zone_totals
 
 
 def reproject_raster(
@@ -784,7 +841,11 @@ def templatize_geometries(
     """
     Rasterizes the combined extent of the provided geometries into a binary template raster.
 
-    The raster covers the geometries' bounding box, with 1 in cells touching a geometry and 0 (nodata) elsewhere.
+    The grid starts at the top-left corner of the geometries' bounding box and holds only whole cells. It can stop less
+    than one cell short of the east and south bounds. Cells touching a geometry hold 1, and other cells hold 0 (nodata).
+
+    The function writes to a temporary file in the same directory, then renames it. An interrupted write therefore
+    can't leave a partial raster at output_path.
 
     Parameters:
         geometry_paths (list[str]): A list of filepaths to geometry files.
@@ -831,8 +892,11 @@ def templatize_geometries(
         "width": raster_width,
     }
 
-    with rasterio.open(output_path, "w", **raster_metadata) as output_raster:
+    # the process ID keeps concurrent runs from sharing a temporary file
+    temporary_path = f"{output_path}.{os.getpid()}.tmp"
+    with rasterio.open(temporary_path, "w", **raster_metadata) as output_raster:
         output_raster.write(raster, 1)
+    os.replace(temporary_path, output_path)
 
     return output_path
 
