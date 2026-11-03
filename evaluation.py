@@ -237,7 +237,7 @@ def update_metrics_summary(
     case_study: str,
     year: int,
     summary_name: str = "metrics.csv",
-):
+) -> None:
     """
     Insert or replace a year's metrics in the case study summary CSV and recompute the average row.
 
@@ -278,7 +278,7 @@ def run(
     huc_level: int,
     case_study: str,
     year: int,
-):
+) -> None:
     """
     Evaluate a disaggregated raster using zonal statistics.
 
@@ -326,7 +326,7 @@ def score_holdout(
     huc_level: int,
     case_study: str,
     year: int,
-):
+) -> None:
     """
     Scores a run below HUC-12 against the HUC-12 statistics, which the run didn't use.
 
@@ -354,13 +354,8 @@ def score_holdout(
         year=year,
         columns=[f"huc{scoring_level}", "water_mgd", "geometry"],
     )
-    if actual_values.crs != grid.crs:
-        actual_values = actual_values.to_crs(grid.crs)
-    zones, zone_hucs = raster_utilities.rasterize_zones(
-        actual_values.geometry,
-        actual_values[f"huc{scoring_level}"],
-        grid.shape,
-        grid.transform,
+    zones, zone_hucs, _ = raster_utilities.build_zones(
+        actual_values, scoring_level, grid
     )
 
     predicted_sums = compute_zonal_sums(
@@ -418,7 +413,7 @@ def rescore(
     huc_level: int = 12,
     case_study: str = "pws-tot",
     year: int = 2000,
-):
+) -> None:
     """
     Evaluate an existing output/huc<huc_level>/<case_study>/<year>/<case_study>_huc<huc_level>_<year>.tif outside the
     pipeline, rebuilding the zones main.py would pass to run(). A run below HUC-12 also gets its holdout score, which
@@ -445,18 +440,9 @@ def rescore(
         huc_level=huc_level,
         case_study=case_study,
         year=year,
-        columns=[f"huc{huc_level}", "geometry"],
+        columns=[f"huc{huc_level}", "water_mgd", "geometry"],
     )
-    # the raster stores EPSG:5070 as WKT, which to_crs doesn't treat as the same CRS: it would run an identity
-    # transform that copies every polygon (~8 GB at CONUS HUC-12; see FIXES.md, fix 29)
-    if zone_polygons.crs != grid.crs:
-        zone_polygons = zone_polygons.to_crs(grid.crs)
-    zones, zone_hucs = raster_utilities.rasterize_zones(
-        zone_polygons.geometry,
-        zone_polygons[f"huc{huc_level}"],
-        grid.shape,
-        grid.transform,
-    )
+    zones, zone_hucs, _ = raster_utilities.build_zones(zone_polygons, huc_level, grid)
     del zone_polygons
 
     predicted_data = raster_utilities.read_raster(predicted_raster_path, grid)
@@ -510,27 +496,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--huc2s",
         nargs="+",
-        default=[
-            "1",
-            "2",
-            "3",
-            "4",
-            "5",
-            "6",
-            "7",
-            "8",
-            "9",
-            "10",
-            "11",
-            "12",
-            "13",
-            "14",
-            "15",
-            "16",
-            "17",
-            "18",
-        ],  # CONUS
-        help="The HUC-2 watersheds to evaluate.",
+        choices=raster_utilities.HUC2S,
+        default=list(raster_utilities.HUC2S),
+        metavar="HUC2",
+        help="The HUC-2 watersheds to evaluate, from 1 to 18, without zero-padding. The default is all 18 (CONUS).",
     )
     parser.add_argument(
         "--huc_level",
@@ -540,6 +509,11 @@ if __name__ == "__main__":
         help="The HUC scale the raster was disaggregated at, and is evaluated at.",
     )
     args = parser.parse_args()
+
+    # choices= accepts a repeated value, and a repeated HUC-2 would count its statistics twice
+    if len(set(args.huc2s)) != len(args.huc2s):
+        parser.error("--huc2s: a HUC-2 is repeated.")
+
     for year in args.years:
         rescore(
             huc2s=args.huc2s,
