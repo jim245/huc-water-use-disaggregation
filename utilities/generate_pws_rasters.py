@@ -79,7 +79,7 @@ def run(
             raster_mask,
             enums.Resampling.average,
             filter_keys=(21, 22, 23, 24),
-            normalization_method="minmax",
+            normalization_method="max",
         ),
         # DARTE on-road CO2 emissions, a proxy for traffic and activity. The files end in 2017
         raster_utilities.prepare_raster_layer(

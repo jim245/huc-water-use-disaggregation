@@ -347,12 +347,13 @@ def normalize(data: NDArray[numpy.float32], method: str) -> NDArray[numpy.float3
     """
     Scales the valid cells of a layer to [0, 1].
 
+    "max" divides valid cells by their maximum, so the cells stay proportional. Use it for the dasymetric weight layer.
     "minmax" scales valid cells linearly from their minimum to their maximum. "log1p" clamps negatives to 0, applies
-    log1p, then scales the same way. NaN cells stay NaN.
+    log1p, then scales the same way as "minmax". NaN cells stay NaN.
 
     Parameters:
-        data (NDArray[numpy.float32]): The layer, NaN as nodata.
-        method (str): The normalization method, one of "minmax" or "log1p".
+        data (NDArray[numpy.float32]): The layer, NaN as nodata. "max" needs values >= 0.
+        method (str): The normalization method, one of "max", "minmax" or "log1p".
 
     Returns:
         result (NDArray[numpy.float32]): The normalized layer.
@@ -361,7 +362,14 @@ def normalize(data: NDArray[numpy.float32], method: str) -> NDArray[numpy.float3
     valid = ~numpy.isnan(data)
     result = numpy.full(data.shape, numpy.nan, dtype=numpy.float32)
 
-    if method == "minmax":
+    if method == "max":
+        high = float(numpy.nanmax(data[valid]))
+        if high > 0:
+            result[valid] = data[valid] / high
+        else:
+            result[valid] = 0.0
+
+    elif method == "minmax":
         low = float(numpy.nanmin(data[valid]))
         high = float(numpy.nanmax(data[valid]))
         if high > low:
@@ -379,7 +387,7 @@ def normalize(data: NDArray[numpy.float32], method: str) -> NDArray[numpy.float3
             result[valid] = 0.0
 
     else:
-        raise ValueError(f"Unknown normalization method {method!r}. Choose from 'minmax' or 'log1p'.")
+        raise ValueError(f"Unknown normalization method {method!r}. Choose from 'max', 'minmax' or 'log1p'.")
 
     # clamp to [0, 1] to guard against floating-point drift
     numpy.clip(result, 0.0, 1.0, out=result)
@@ -790,24 +798,38 @@ def write_mask(mask: geopandas.GeoDataFrame, output_path: Path) -> None:
         temporary_path.replace(output_path)
 
 
-def write_raster(output_path: str, data: NDArray[numpy.float32], grid: Grid) -> str:
+def run_directory(*, case_study: str, year: int, huc_level: int) -> Path:
+    """
+    Makes the output directory of one run, output/huc<huc_level>/<case_study>/<year>/, if it doesn't exist.
+
+    Parameters:
+        case_study (str): The case study of the run.
+        year (int): The year of the run.
+        huc_level (int): The HUC level of the run.
+
+    Returns:
+        directory (Path): The output directory.
+    """
+
+    directory = Path("output", f"huc{huc_level}", case_study, str(year))
+    directory.mkdir(parents=True, exist_ok=True)
+
+    return directory
+
+
+def write_raster(output_path: str | Path, data: NDArray[numpy.float32], grid: Grid) -> None:
     """
     Writes a single-band float32 GeoTIFF on the grid, with NaN as nodata.
 
     An interrupted write can't leave a partial raster at output_path (see _write_atomically).
 
     Parameters:
-        output_path (str): The path to the output file.
+        output_path (str | Path): The path to the output file.
         data (NDArray[numpy.float32]): The (height, width) values.
         grid (Grid): The grid the values are on.
-
-    Returns:
-        output_path (str): The path to the output file.
     """
 
     _write_atomically(output_path, data, grid.profile())
-
-    return output_path
 
 
 def _write_atomically(output_path: str | Path, data: NDArray[Any], profile: dict[str, Any]) -> None:

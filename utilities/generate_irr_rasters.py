@@ -84,7 +84,7 @@ def run(
             raster_mask,
             enums.Resampling.average,
             filter_keys=(81, 82),
-            normalization_method="minmax",
+            normalization_method="max",
         ),
         raster_utilities.prepare_raster_layer(
             cdl_directory,
