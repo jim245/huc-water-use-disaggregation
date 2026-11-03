@@ -21,6 +21,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy
 import pandas
+from matplotlib.axes import Axes
 from matplotlib.colors import LogNorm
 from matplotlib.layout_engine import ConstrainedLayoutEngine
 from numpy.typing import NDArray
@@ -30,7 +31,8 @@ from shapely.geometry import MultiPolygon, Polygon, box
 
 from utilities import raster_utilities
 
-STATE_BOUNDARIES_PATH = Path("input", "USA", "cb_2024_us_state_500k.shp")
+STATE_BOUNDARIES_YEAR = 2025
+STATE_BOUNDARIES_PATH = Path("input", "USA", f"cb_{STATE_BOUNDARIES_YEAR}_us_state_500k.shp")
 
 # applies to each socket read, not to the whole download
 DOWNLOAD_TIMEOUT_SECONDS = 60
@@ -68,8 +70,7 @@ def download_state_boundaries() -> None:
     Extracts the shapefile and its metadata files to the directory of STATE_BOUNDARIES_PATH. Skips the download if the
     .shp file is already there.
 
-    The figures use the files downloaded on 2026-05-26. Their .shp, .shx, .dbf, .prj and .cpg files match the Census
-    archive of 2025-04-10.
+    The figures use the files downloaded on 2026-11-03, from the Census archive of 2026-04-23.
     """
 
     directory = STATE_BOUNDARIES_PATH.parent
@@ -81,7 +82,7 @@ def download_state_boundaries() -> None:
     # the .shp file must appear only when complete, because the check above skips an existing .shp file
     with tempfile.TemporaryDirectory(dir=directory) as temporary_directory:
         with request.urlopen(
-            f"https://www2.census.gov/geo/tiger/GENZ2024/shp/{STATE_BOUNDARIES_PATH.stem}.zip",
+            f"https://www2.census.gov/geo/tiger/GENZ{STATE_BOUNDARIES_YEAR}/shp/{STATE_BOUNDARIES_PATH.stem}.zip",
             timeout=DOWNLOAD_TIMEOUT_SECONDS,
         ) as response:
             archive_data = response.read()
@@ -104,6 +105,7 @@ def run(
     raster: NDArray[numpy.float32],
     grid: raster_utilities.Grid,
     detail_huc2s: Sequence[str],
+    *,
     huc_level: int,
     case_study: str,
     year: int,
@@ -111,14 +113,14 @@ def run(
     """
     Renders a disaggregated raster, with its title and label taken from the case study and year.
 
-    The figure is written to output/huc<huc_level>/<case_study>/<year>/<case_study>_huc<huc_level>_<year>.png.
+    Writes the figure to output/huc<huc_level>/<case_study>/<year>/<case_study>_huc<huc_level>_<year>.png.
 
     Parameters:
         raster (NDArray[numpy.float32]): The disaggregated raster, NaN as nodata.
         grid (raster_utilities.Grid): The grid the raster is on.
         detail_huc2s (Sequence[str]): The HUC-2 watersheds that the detail view zooms in on. An empty sequence
             omits the detail view.
-        huc_level (int): The HUC scale used for spatial disaggregation.
+        huc_level (int): The HUC level of the run.
         case_study (str): The case study.
         year (int): The year.
 
@@ -135,13 +137,8 @@ def run(
         detail_huc2s,
         f"Spatially Disaggregated {year} USGS {sector} {measure}",
         f"{measure} (Million Gallons per Day per cell)",
-        Path(
-            "output",
-            f"huc{huc_level}",
-            case_study,
-            str(year),
-            f"{case_study}_huc{huc_level}_{year}.png",
-        ),
+        raster_utilities.run_directory(case_study=case_study, year=year, huc_level=huc_level)
+        / f"{case_study}_huc{huc_level}_{year}.png",
     )
 
 
@@ -154,7 +151,9 @@ def render(
     output_path: Path,
 ) -> Path:
     """
-    Renders one column of panels per raster, all sharing one color scale.
+    Renders one column of panels per raster, all sharing one color scale, and writes the figure to output_path.
+
+    Downloads the state boundaries first if they are missing (see download_state_boundaries).
 
     Parameters:
         columns (Sequence[NDArray[numpy.float32]]): The rasters, NaN as nodata, one per column. At least one.
@@ -163,15 +162,13 @@ def render(
             omits the detail views.
         title (str): The figure title.
         colorbar_label (str): The colorbar label.
-        output_path (Path): The path to the figure.
+        output_path (Path): The path to the figure. Its directory must exist.
 
     Returns:
         output_path (Path): The path to the figure.
     """
 
-    left, bottom, right, top = rasterio_transform.array_bounds(
-        *grid.shape, grid.transform
-    )
+    left, bottom, right, top = rasterio_transform.array_bounds(*grid.shape, grid.transform)
     extent = [left, right, bottom, top]
     grid_box = box(left, bottom, right, top)
 
@@ -240,12 +237,8 @@ def render(
 
         if detail_view is not None:
             ax_detail = axes[1][column]
-            detail_view.outline.plot(
-                ax=ax_detail, facecolor="none", edgecolor="black", linewidth=0.4
-            )
-            ax_detail.imshow(
-                numpy.where(detail_view.outside, numpy.nan, data), **imshow_kw
-            )
+            detail_view.outline.plot(ax=ax_detail, facecolor="none", edgecolor="black", linewidth=0.4)
+            ax_detail.imshow(numpy.where(detail_view.outside, numpy.nan, data), **imshow_kw)
             ax_detail.set_xlim(detail_view.view_bounds[0], detail_view.view_bounds[2])
             ax_detail.set_ylim(detail_view.view_bounds[1], detail_view.view_bounds[3])
             ax_detail.set_aspect("equal", adjustable="datalim")
@@ -256,20 +249,17 @@ def render(
         ax=axes.ravel().tolist(),
         fraction=0.02 * (2 / n_cols),
         pad=0.04,
-        # arrows only for ends that some pixels actually fall beyond (zeros below
-        # the log floor, values above the percentile cap)
+        # an arrow marks only an end that some valid values pass: values <= 0 in LOG mode, and values above vmax
         extend=["neither", "min", "max", "both"][
-            bool(LOG and (all_valid <= 0).any())
-            + 2 * bool(all_valid.size and all_valid.max() > vmax)
+            bool(LOG and (all_valid <= 0).any()) + 2 * bool(all_valid.size and all_valid.max() > vmax)
         ],
     )
     if VMAX_PERCENTILE is not None:
-        # label the cap so readers can see where the top color starts
+        # label the cap, so readers see where the top color starts. Skip the ticks near the cap, because their labels
+        # would overlap the cap label
         lo = LOG_VMIN if LOG else vmin
         ticks = [t for t in cbar.get_ticks() if lo <= t < vmax * 0.8]
-        labels = [
-            f"$10^{{{round(numpy.log10(t))}}}$" if LOG else f"{t:g}" for t in ticks
-        ]
+        labels = [f"$10^{{{round(numpy.log10(t))}}}$" if LOG else f"{t:g}" for t in ticks]
         cbar.set_ticks(ticks + [vmax], labels=labels + [f"{vmax:.2g}"])
     cbar.set_label(colorbar_label, fontsize=20)
     cbar.ax.tick_params(labelsize=18)
@@ -283,9 +273,7 @@ def render(
     return output_path
 
 
-def _read_detail_view(
-    detail_huc2s: Sequence[str], grid: raster_utilities.Grid
-) -> _DetailView:
+def _read_detail_view(detail_huc2s: Sequence[str], grid: raster_utilities.Grid) -> _DetailView:
     """
     Reads the HUC-2 boundaries of the detail view from input/HUC/<huc2>/Shape/WBDHU2.shp.
 
@@ -300,9 +288,7 @@ def _read_detail_view(
     huc2_boundaries = geopandas.GeoDataFrame(
         pandas.concat(
             [
-                geopandas.read_file(
-                    Path("input", "HUC", huc2, "Shape", "WBDHU2.shp")
-                ).to_crs(grid.crs)
+                geopandas.read_file(Path("input", "HUC", huc2, "Shape", "WBDHU2.shp")).to_crs(grid.crs)
                 for huc2 in detail_huc2s
             ]
         ),
@@ -314,17 +300,15 @@ def _read_detail_view(
         invert=False,
         out_shape=grid.shape,
     )
-    return _DetailView(
-        outside, _dissolve_outline(huc2_boundaries), huc2_boundaries.total_bounds
-    )
+    return _DetailView(outside, _dissolve_outline(huc2_boundaries), huc2_boundaries.total_bounds)
 
 
-def _finish_panel(ax: plt.Axes, letter: str) -> None:
+def _finish_panel(ax: Axes, letter: str) -> None:
     """
     Clears a panel's ticks and draws its letter in the top left corner.
 
     Parameters:
-        ax (plt.Axes): The panel.
+        ax (Axes): The panel.
         letter (str): The panel's letter.
     """
 
@@ -346,7 +330,7 @@ def _dissolve_outline(gdf: geopandas.GeoDataFrame) -> geopandas.GeoDataFrame:
     """
     Dissolves polygons into one outline.
 
-    Adjacent mask polygons don't share vertices exactly, so dissolving leaves sliver holes along their common border
+    Adjacent HUC-2 polygons don't share vertices exactly, so dissolving leaves sliver holes along their common border
     that would show as lines. This function deletes all holes.
 
     Parameters:
@@ -385,9 +369,7 @@ def _expand_paths(raster_paths: Sequence[str]) -> list[str]:
     return expanded_paths
 
 
-def _sum_rasters(
-    raster_paths: Sequence[str], grid: raster_utilities.Grid
-) -> NDArray[numpy.float32]:
+def _sum_rasters(raster_paths: Sequence[str], grid: raster_utilities.Grid) -> NDArray[numpy.float32]:
     """
     Sums rasters cell by cell, treating NaN as nodata.
 
@@ -401,7 +383,7 @@ def _sum_rasters(
 
     layers = numpy.stack(
         [
-            raster_utilities.read_raster(raster_path, grid).astype(numpy.float32)
+            raster_utilities.read_raster(raster_path, grid).astype(numpy.float32, copy=False)
             for raster_path in raster_paths
         ]
     )
@@ -411,9 +393,7 @@ def _sum_rasters(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Render existing rasters, for figures the pipeline doesn't make."
-    )
+    parser = argparse.ArgumentParser(description="Render existing rasters, for figures the pipeline doesn't make.")
     parser.add_argument(
         "--left",
         nargs="+",
@@ -428,13 +408,18 @@ if __name__ == "__main__":
     parser.add_argument(
         "--detail_huc2s",
         nargs="*",
+        choices=raster_utilities.HUC2S,
         default=["14", "15"],
+        metavar="HUC2",
         help="The HUC-2 watersheds that the detail views zoom in on. Pass no values to omit the detail views.",
     )
     parser.add_argument("--title", required=True, help="The figure title.")
     parser.add_argument("--colorbar_label", required=True, help="The colorbar label.")
     parser.add_argument("--output", required=True, help="The path to the figure.")
     args = parser.parse_args()
+
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     column_paths = [_expand_paths(args.left)]
     if args.right:
@@ -447,5 +432,5 @@ if __name__ == "__main__":
         args.detail_huc2s,
         args.title,
         args.colorbar_label,
-        Path(args.output),
+        output_path,
     )
