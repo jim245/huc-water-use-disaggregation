@@ -6,9 +6,9 @@ This repository is a refactor of [spdisaggregation](https://github.com/joaomigl1
 
 Use [conda](https://docs.conda.io/projects/conda/en/latest/user-guide/install/) for package and environment management (recommended).
 
-> If you work in an environment without direct GPU access, you must set the `CONDA_OVERRIDE_CUDA` environment variable to `12.9` BEFORE you install TensorFlow. This forces CUDA compatibility.
+> The environment is for linux-64 with an NVIDIA GPU that CUDA 13 supports, with driver 580 or later. On a machine without a GPU, such as a login node, set `CONDA_OVERRIDE_CUDA=13.0` before you create the environment.
 
-From the repository root, run `conda env create -f environment.yaml` to create the `WATER_DISAGGREGATION` environment with all required packages, and `conda activate WATER_DISAGGREGATION` to activate it.
+From the repository root, run `conda env create -f environment.yaml -p .conda` to create the environment in `.conda`, and `conda activate ./.conda` to activate it.
 
 ## Folder Structure
 
