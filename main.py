@@ -18,11 +18,12 @@ Terms:
     ancillary layer: A raster of predictor data on the template grid, for example land cover.
     zone: The cells of the template grid that belong to one HUC. Each cell belongs to at most one zone.
     support: The cells that can receive water. Only irr uses a support limit.
+    initial estimates: The output of stage 3. Stage 4 refines it.
 
 Stages:
-    1. Data preparation: Downloads the HUC boundaries, the NLCD rasters and the state boundaries for the figure.
-       Builds the template raster. Merges the statistics with the HUC geometries. Prepares the ancillary layers of the
-       case study on the template grid.
+    1. Data preparation: Downloads the HUC boundaries, the NLCD rasters and the state boundaries for the figure. All
+       other inputs must be in input/ before the run (see README.md). Builds the template raster. Merges the
+       statistics with the HUC geometries. Prepares the ancillary layers of the case study on the template grid.
     2. Dasymetric mapping: Spreads each HUC total over its cells in proportion to the first ancillary layer.
     3. Pycnophylactic interpolation: Smooths the dasymetric estimates and rescales them to the HUC totals.
     4. Spatial disaggregation: Refines the estimates with alternating CNN and random forest iterations. Each iteration
@@ -38,22 +39,20 @@ their output rasters, stage 5 writes comparison files and metrics, and stage 6 w
 Stages 2-4 keep each HUC total only if the HUC has cells that can hold its water. A HUC with no such cells loses its
 total, and no later stage restores it. Evaluation reports this water as missing.
 
-Inputs: The pipeline downloads only the HUC boundaries, the NLCD rasters and the state boundaries. All other inputs
-must be in input/ before the run.
-
-HUC levels: One run uses one HUC level for all stages. Earlier runs used HUC-12 initial estimates and HUC-8
-disaggregation. In tests on irr 2000 and pws-tot 2000, that setup lost the HUC-12 totals. Its placement scores at
-HUC-12 were about equal to those of a run at level 8.
+HUC levels: One run uses one HUC level for all stages. A stage at a coarser level than the stage before it keeps only
+the coarser totals.
     12: The default level and the finest level. All source statistics have 12-digit HUC IDs.
     8: The holdout level. Run each case study and year at level 12 for the product, and at level 8 for the error
-       estimate. Stages 1-4 of a level 8 run don't read the HUC-12 statistics, so the holdout score is out of sample.
-       It measures placement from HUC-8 to HUC-12. It doesn't measure the cell error of the level 12 product.
+       estimate. Stages 1-4 of a level 8 run use only the HUC-8 statistics, so the holdout score is out of sample.
+       Stage 1 also writes the HUC-12 statistics, which only stage 5 reads. The holdout score measures placement from
+       HUC-8 to HUC-12. It doesn't measure the cell error of the level 12 product.
     2, 4, 6 and 10: Available but not tested. The merge scripts sum the HUC-12 statistics to these levels.
 """
 
 import argparse
 import time
 import warnings
+from collections.abc import Sequence
 from pathlib import Path
 
 import dasymetric_mapping
@@ -92,26 +91,29 @@ def main(
     case_study: str,
     reprojected_crs: str,
     cell_size: int,
-    huc2s: list[str],
+    huc2s: Sequence[str],
     huc_level: int,
     year: int,
-    detail_huc2s: list[str],
+    detail_huc2s: Sequence[str],
 ) -> None:
     """
     Runs all pipeline stages for one case study and one year.
 
-    The module docstring describes the stages and the HUC levels. Stages 2-6 write their outputs to
-    output/huc<huc_level>/<case_study>/<year>/, except metrics.csv, which is in output/huc<huc_level>/<case_study>/.
+    The module docstring describes the stages and the HUC levels. Stages 2-6 write their outputs to the run directory
+    (raster_utilities.run_directory). metrics.csv and holdout_metrics.csv are in its parent directory. Only the command
+    line checks the limits of the parameters below, and that the current directory is the repository root.
 
     Parameters:
         case_study (str): The case study to run. It must be a key of raster_utilities.CASE_STUDIES.
         reprojected_crs (str): The CRS of all spatial operations.
         cell_size (int): The output cell size, in CRS units.
-        huc2s (list[str]): The HUC-2 watersheds of the run, without zero-padding (for example "1", not "01").
+        huc2s (Sequence[str]): The HUC-2 watersheds of the run, without zero-padding (for example "1", not "01"). No
+            HUC-2 may repeat, because evaluation would count its statistics twice.
         huc_level (int): The HUC level of the statistics, the initial estimates, the disaggregation and the evaluation.
-        year (int): The year to run.
-        detail_huc2s (list[str]): The HUC-2 watersheds that the detail view of the figure zooms in on. They must be
-            in huc2s. An empty list omits the detail view.
+            It must be in raster_utilities.HUC_LEVELS.
+        year (int): The year to run. It must be in the first_year to last_year range of the case study.
+        detail_huc2s (Sequence[str]): The HUC-2 watersheds that the detail view of the figure zooms in on. They must
+            be in huc2s. An empty sequence omits the detail view.
     """
 
     start_time = time.perf_counter()
@@ -121,9 +123,7 @@ def main(
     # stage 1: data preparation
     download_huc_boundaries.run(huc2s)
 
-    template_raster_path = generate_template_raster.run(
-        huc2s, reprojected_crs, cell_size
-    )
+    template_raster_path = generate_template_raster.run(huc2s, reprojected_crs, cell_size)
 
     download_nlcd_rasters.run(year)
 
@@ -131,12 +131,9 @@ def main(
     # all other stages
     figure_utilities.download_state_boundaries()
 
-    # the merge scripts accept a set of HUC levels. A run below HUC-12 also needs the HUC-12 statistics, which only
-    # the holdout score reads
     merge_levels = {huc_level, raster_utilities.STATISTICS_HUC_LEVEL}
     match case_study:
         case "pws-cu" | "pws-gw" | "pws-sw" | "pws-tot":
-            # pws-cu has its own script because its source values are monthly volumes, not monthly MGD
             if case_study == "pws-cu":
                 merge_pwscu_statistics.run(
                     huc2s=huc2s,
@@ -182,7 +179,6 @@ def main(
 
     grid = raster_utilities.Grid.from_raster(template_raster_path)
 
-    # read the statistics and rasterize their HUCs once, so every stage assigns each cell to the same HUC
     statistics = raster_utilities.read_statistics(
         huc2s=huc2s,
         huc_level=huc_level,
@@ -190,13 +186,11 @@ def main(
         year=year,
         columns=[f"huc{huc_level}", "water_mgd", "geometry"],
     )
-    zones, zone_hucs, zone_totals = raster_utilities.build_zones(
-        statistics, huc_level, grid
-    )
+    zones, zone_hucs, zone_totals = raster_utilities.build_zones(statistics, huc_level, grid)
     # later stages in this function need only the IDs and the totals, so this line releases the geometries
     del statistics
 
-    # stage 2: dasymetric mapping. Layer 0 is the weight layer: NLCD planted/cultivated (irr) or NLCD developed (pws)
+    # stage 2: dasymetric mapping
     dasymetric_raster = dasymetric_mapping.run(
         prepared_layers[0],
         zones,
@@ -216,11 +210,7 @@ def main(
         case_study=case_study,
         year=year,
         huc_level=huc_level,
-        support=(
-            prepared_layers[settings.support_layer]
-            if settings.support_layer is not None
-            else None
-        ),
+        support=(prepared_layers[settings.support_layer] if settings.support_layer is not None else None),
     )
 
     # stage 4: spatial disaggregation
@@ -235,8 +225,7 @@ def main(
         support_layer=settings.support_layer,
     )
 
-    # stage 5: evaluation. Each iteration rescales to these same zones, so scores near 1 show that the run keeps the
-    # totals. They don't measure the placement of water within each HUC. The holdout score below measures placement
+    # stage 5: evaluation
     evaluation.run(
         disaggregated_raster,
         zones,
@@ -273,36 +262,41 @@ def main(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Runs the spatial disaggregation pipeline for one case study and one year."
+    )
     parser.add_argument(
         "--case_study",
         choices=list(raster_utilities.CASE_STUDIES),
-        default="pws-tot",
+        required=True,
         help="The case study to run. It selects the statistics and the ancillary layers.",
+    )
+    year_ranges = ", ".join(
+        f"{name} {study.first_year}-{study.last_year}" for name, study in raster_utilities.CASE_STUDIES.items()
     )
     parser.add_argument(
         "--year",
-        default=2000,
+        required=True,
         type=int,
-        help="The year to run. It selects the statistics and the ancillary layers. pws-cu covers 2009-2020, and all "
-        "other case studies cover 2000-2020.",
+        help=f"The year to run. It selects the statistics and the ancillary layers. The years of each case study: "
+        f"{year_ranges}.",
     )
     parser.add_argument(
         "--huc2s",
         nargs="+",
         choices=raster_utilities.HUC2S,
-        default=list(raster_utilities.HUC2S),
+        default=raster_utilities.HUC2S,
         metavar="HUC2",
-        help='The HUC-2 watersheds of the run, from 1 to 18, without zero-padding (for example "1", not "01"). The '
-        "default is all 18 (CONUS).",
+        help=f"The HUC-2 watersheds of the run, from {raster_utilities.HUC2S[0]} to {raster_utilities.HUC2S[-1]}, "
+        f'without zero-padding (for example "1", not "01"). The default is all {len(raster_utilities.HUC2S)} (CONUS).',
     )
     parser.add_argument(
         "--huc_level",
         choices=raster_utilities.HUC_LEVELS,
-        default=12,
+        default=raster_utilities.STATISTICS_HUC_LEVEL,
         type=int,
-        help="The HUC level of all stages. The source statistics stop at level 12. The project tested only levels 8 "
-        "and 12.",
+        help="The HUC level of all stages. The source statistics stop at level "
+        f"{raster_utilities.STATISTICS_HUC_LEVEL}. The project tested only levels 8 and 12.",
     )
     parser.add_argument(
         "--crs",
@@ -318,7 +312,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--detail_huc2s",
         nargs="*",
-        default=["14", "15"],
+        default=("14", "15"),
         metavar="HUC2",
         help="The HUC-2 watersheds that the detail view of the figure zooms in on. They must be in --huc2s, so a run "
         "without 14 and 15 must set this option. Pass no values to omit the detail view.",
@@ -338,7 +332,7 @@ if __name__ == "__main__":
             f"--year: {args.case_study} statistics cover {settings.first_year}-{settings.last_year}, not {args.year}."
         )
 
-    # choices= accepts a repeated value, and a repeated HUC-2 would count its statistics twice in evaluation
+    # choices= accepts a repeated value
     if len(set(args.huc2s)) != len(args.huc2s):
         parser.error("--huc2s: a HUC-2 is repeated.")
 
