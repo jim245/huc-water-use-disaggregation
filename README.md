@@ -10,6 +10,8 @@ Use [conda](https://docs.conda.io/projects/conda/en/latest/user-guide/install/) 
 
 From the repository root, run `conda env create -f environment.yaml -p .conda` to create the environment in `.conda`, and `conda activate ./.conda` to activate it.
 
+Run `.conda/bin/pre-commit install` once to install the [pre-commit hooks](./.pre-commit-config.yaml). They lint, type-check, spell-check and format each commit, according to the tool settings in [`pyproject.toml`](./pyproject.toml).
+
 ## Folder Structure
 
 All inputs are in `input/`. The pipeline downloads the HUC boundaries, the NLCD rasters and the state boundaries. Put all other datasets at the paths in [Datasets Used](#datasets-used) before the run. The pipeline also writes its caches to `input/`.
@@ -33,7 +35,7 @@ The pipeline writes its outputs to `output/huc{huc_level}/{case_study}/{year}/{c
 The [main.py](./main.py) orchestrator script can be invoked as follows:
 
 ```text
-usage: main.py [-h] --case_study {irr,pws-cu,pws-gw,pws-sw,pws-tot} --year YEAR [--huc2s HUC2 [HUC2 ...]] [--huc_level {2,4,6,8,10,12}] [--crs CRS] [--cell_size CELL_SIZE] [--detail_huc2s [HUC2 ...]]
+usage: main.py [-h] --case_study {irr,pws-cu,pws-gw,pws-sw,pws-tot} --year YEAR [--huc2s HUC2 [HUC2 ...]] [--huc_level {2,4,6,8,10,12}] [--crs CRS] [--cell_size CELL_SIZE] [--detail_huc2s [HUC2 ...]] [--prepare_only]
 
 Runs the spatial disaggregation pipeline for one case study and one year.
 
@@ -51,6 +53,7 @@ options:
                         The output cell size, in CRS units.
   --detail_huc2s [HUC2 ...]
                         The HUC-2 watersheds that the detail view of the figure zooms in on. They must be in --huc2s, so a run without 14 and 15 must set this option. Pass no values to omit the detail view.
+  --prepare_only        Run only stage 1 (data preparation), and keep its downloads, statistics and caches in input/ for later runs. It needs no GPU.
 ```
 
 Run each case study and year twice: `--huc_level 12` for the product, and `--huc_level 8` for its holdout score. Near-perfect scores in `metrics.csv` only show that the run keeps the HUC totals. The holdout score measures how well the method places water from HUC-8 down to HUC-12. It is a proxy, and it does not measure the error of individual cells.
@@ -69,31 +72,31 @@ Paths are relative to `input/`. The pipeline downloads the datasets marked "Down
 
 ## Boundaries
 
-| Dataset | Path | Use |
-|---|---|---|
-| [Watershed Boundary Dataset](https://www.usgs.gov/national-hydrography/watershed-boundary-dataset) | `HUC/{huc2}/Shape/WBDHU{huc_level}.shp` | All. Downloaded |
-| [Census Cartographic Boundary Files](https://www.census.gov/geographies/mapping-files/time-series/geo/cartographic-boundary.html) (2025 states at 1:500,000) | `USA/cb_2025_us_state_500k.shp` | The figure. Downloaded |
+| Dataset                                                                                                                                                      | Path                                    | Use                    |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------- | ---------------------- |
+| [Watershed Boundary Dataset](https://www.usgs.gov/national-hydrography/watershed-boundary-dataset)                                                           | `HUC/{huc2}/Shape/WBDHU{huc_level}.shp` | All. Downloaded        |
+| [Census Cartographic Boundary Files](https://www.census.gov/geographies/mapping-files/time-series/geo/cartographic-boundary.html) (2025 states at 1:500,000) | `USA/cb_2025_us_state_500k.shp`         | The figure. Downloaded |
 
 ## Water Use Statistics
 
-| Dataset | Path | Use |
-|---|---|---|
-| [Irrigation](https://www.sciencebase.gov/catalog/item/639a11b9d34e0de3a1f0ddde) | `statistics/Irr_CU_HUC12_Tot_annual_2000_2020.csv` | irr, 2000-2020 |
-| [Public Water Supply](https://www.sciencebase.gov/catalog/item/65f86970d34e97daac9ff4c8) | `statistics/PS_HUC12_{GW,SW,Tot}_2000_2020.csv` | pws-gw, pws-sw, pws-tot, 2000-2020 |
-| [Public Water Supply (Consumptive)](https://www.sciencebase.gov/catalog/item/65f869add34e97daac9ff4d2) | `statistics/ps_mon_CU_ETr.csv` | pws-cu, 2009-2020 |
+| Dataset                                                                                                | Path                                               | Use                                |
+| ------------------------------------------------------------------------------------------------------ | -------------------------------------------------- | ---------------------------------- |
+| [Irrigation](https://www.sciencebase.gov/catalog/item/639a11b9d34e0de3a1f0ddde)                        | `statistics/Irr_CU_HUC12_Tot_annual_2000_2020.csv` | irr, 2000-2020                     |
+| [Public Water Supply](https://www.sciencebase.gov/catalog/item/65f86970d34e97daac9ff4c8)               | `statistics/PS_HUC12_{GW,SW,Tot}_2000_2020.csv`    | pws-gw, pws-sw, pws-tot, 2000-2020 |
+| [Public Water Supply (Consumptive)](https://www.sciencebase.gov/catalog/item/65f869add34e97daac9ff4d2) | `statistics/ps_mon_CU_ETr.csv`                     | pws-cu, 2009-2020                  |
 
 ## Ancillary Inputs
 
-| Dataset | Path | Use |
-|---|---|---|
-| [USDA Cropland Data Layer](https://www.nass.usda.gov/Research_and_Science/Cropland/SARS1a.php) (CDL) | `CDL/{year}/{year}_30m_cdls.tif`, from 2008. Years before 2008 use 2008 | irr |
-| [DARTE On-road CO2 Emissions](https://data.nasa.gov/dataset/darte-annual-on-road-co2-emissions-on-a-1-km-grid-conterminous-usa-v2-1980-2017-4d5f4) (DARTE) | `DARTE/onroad_{year}.tif` | pws |
-| [Gross Domestic Product](https://www.nature.com/articles/s41597-022-01322-5#code-availability) (GDP) | `GDP/{year}GDP.tif` | pws |
-| [Terrain Slope](https://www.landfire.gov/topographic/slope) (LandFire) | `LandFire/LF2020_SlpD_CONUS/Tif/LF2020_SlpD_CONUS.tif` | irr, all years |
-| [MRLC Annual NLCD Land Cover](https://www.mrlc.gov/data) (NLCD, Collection 1 version 1) | `NLCD/{year}/Annual_NLCD_LndCov_{year}_CU_C1V1.tif` | irr, pws. Downloaded |
-| [Precipitation](https://prism.oregonstate.edu/data/) (PRISM) | `PRISM/{year}/prism_ppt_us_30s_{year}.tif` | irr |
-| [WorldPop Population Counts](https://hub.worldpop.org/geodata/listing?id=74) (WorldPop) | `WorldPop/usa_ppp_{year}_1km_Aggregated.tif` | pws |
-| [Public-Supply Water Service Areas](https://www.sciencebase.gov/catalog/item/608035dcd34e8564d6835790) (WSA_v1) | `WSA_v1/WSA_v1.shp` | pws mask |
+| Dataset                                                                                                                                                    | Path                                                                    | Use                  |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | -------------------- |
+| [USDA Cropland Data Layer](https://www.nass.usda.gov/Research_and_Science/Cropland/SARS1a.php) (CDL)                                                       | `CDL/{year}/{year}_30m_cdls.tif`, from 2008. Years before 2008 use 2008 | irr                  |
+| [DARTE On-road CO2 Emissions](https://data.nasa.gov/dataset/darte-annual-on-road-co2-emissions-on-a-1-km-grid-conterminous-usa-v2-1980-2017-4d5f4) (DARTE) | `DARTE/onroad_{year}.tif`                                               | pws                  |
+| [Gross Domestic Product](https://www.nature.com/articles/s41597-022-01322-5#code-availability) (GDP)                                                       | `GDP/{year}GDP.tif`                                                     | pws                  |
+| [Terrain Slope](https://www.landfire.gov/topographic/slope) (LandFire)                                                                                     | `LandFire/LF2020_SlpD_CONUS/Tif/LF2020_SlpD_CONUS.tif`                  | irr, all years       |
+| [MRLC Annual NLCD Land Cover](https://www.mrlc.gov/data) (NLCD, Collection 1 version 1)                                                                    | `NLCD/{year}/Annual_NLCD_LndCov_{year}_CU_C1V1.tif`                     | irr, pws. Downloaded |
+| [Precipitation](https://prism.oregonstate.edu/data/) (PRISM)                                                                                               | `PRISM/{year}/prism_ppt_us_30s_{year}.tif`                              | irr                  |
+| [WorldPop Population Counts](https://hub.worldpop.org/geodata/listing?id=74) (WorldPop)                                                                    | `WorldPop/usa_ppp_{year}_1km_Aggregated.tif`                            | pws                  |
+| [Public-Supply Water Service Areas](https://www.sciencebase.gov/catalog/item/608035dcd34e8564d6835790) (WSA_v1)                                            | `WSA_v1/WSA_v1.shp`                                                     | pws mask             |
 
 # Citation
 

@@ -95,9 +95,10 @@ def main(
     huc_level: int,
     year: int,
     detail_huc2s: Sequence[str],
+    prepare_only: bool = False,
 ) -> None:
     """
-    Runs all pipeline stages for one case study and one year.
+    Runs all pipeline stages for one case study and one year, or only stage 1.
 
     The module docstring describes the stages and the HUC levels. Stages 2-6 write their outputs to the run directory
     (raster_utilities.run_directory). metrics.csv and holdout_metrics.csv are in its parent directory. Only the command
@@ -114,6 +115,8 @@ def main(
         year (int): The year to run. It must be in the first_year to last_year range of the case study.
         detail_huc2s (Sequence[str]): The HUC-2 watersheds that the detail view of the figure zooms in on. They must
             be in huc2s. An empty sequence omits the detail view.
+        prepare_only (bool = False): Stops after stage 1. Its downloads, statistics, masks and layer caches stay in
+            input/ for later runs, so a CPU job can prepare them.
     """
 
     start_time = time.perf_counter()
@@ -176,6 +179,10 @@ def main(
         case _:
             # a case study in CASE_STUDIES has no branch here
             raise ValueError(f"Unhandled case study {case_study}!")
+
+    if prepare_only:
+        print("Time (h):", (time.perf_counter() - start_time) / 3600)
+        return
 
     grid = raster_utilities.Grid.from_raster(template_raster_path)
 
@@ -317,6 +324,12 @@ if __name__ == "__main__":
         help="The HUC-2 watersheds that the detail view of the figure zooms in on. They must be in --huc2s, so a run "
         "without 14 and 15 must set this option. Pass no values to omit the detail view.",
     )
+    parser.add_argument(
+        "--prepare_only",
+        action="store_true",
+        help="Run only stage 1 (data preparation), and keep its downloads, statistics and caches in input/ for later "
+        "runs. It needs no GPU.",
+    )
     args = parser.parse_args()
 
     # all paths are relative to the repository root. From another folder, stage 1 would download several GB into a new
@@ -349,4 +362,5 @@ if __name__ == "__main__":
         huc_level=args.huc_level,
         year=args.year,
         detail_huc2s=args.detail_huc2s,
+        prepare_only=args.prepare_only,
     )
