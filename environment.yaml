@@ -223,6 +223,7 @@ dependencies:
   - zstd=1.5.7=h11fc155_0
   - pip:
       - basedpyright==1.40.2
+      - codespell==2.4.3
       - editorconfig-checker==3.11.1
       - nodejs-wheel-binaries==24.19.0
       - ruff==0.17.3

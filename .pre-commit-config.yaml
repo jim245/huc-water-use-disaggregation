@@ -25,6 +25,11 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
+      - id: codespell
+        name: codespell
+        entry: .conda/bin/codespell
+        language: system
+        types: [text]
       - id: editorconfig-checker
         name: editorconfig-checker
         entry: .conda/bin/ec

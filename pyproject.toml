@@ -24,3 +24,7 @@ paths = [
 ]
 # Keras calls this Sequence method at the end of each epoch
 ignore_names = ["on_epoch_end"]
+
+[tool.codespell]
+# te is the thermoelectric case study, and NMAE is the normalized mean absolute error
+ignore-words-list = "te,nmae"
