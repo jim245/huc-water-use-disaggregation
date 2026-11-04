@@ -165,12 +165,28 @@ def evaluate_zonal_sums(
     return year_metrics
 
 
+def write_csv_atomically(table: pandas.DataFrame, path: Path) -> None:
+    """
+    Writes a table to a temporary file and then replaces path, so an interrupted write can't leave a partial file.
+
+    Parameters:
+        table (pandas.DataFrame): The table, written without its index.
+        path (Path): The CSV to write.
+    """
+
+    # the process ID keeps concurrent runs from sharing a temporary file
+    temporary_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    table.to_csv(temporary_path, index=False)
+    temporary_path.replace(path)
+
+
 def update_metrics_summary(year_metrics: dict[str, float], *, year: int, summary_path: Path) -> None:
     """
-    Inserts or replaces the metrics of one year in a summary CSV, and calculates the Average row again.
+    Writes the metrics of one year, and builds the summary CSV again from the metrics of all years.
 
-    Each year runs separately, so the summary keeps the rows of the other years. The function writes a temporary file
-    and then replaces summary_path, so an interrupted write can't lose these rows.
+    The metrics of a year go to the year's run directory, with the name of summary_path. The summary has one row for
+    each of these year files and an Average row. Runs of one case study at the same time can't lose a year: if a year
+    file changes while a run builds the summary, the run builds it again.
 
     Parameters:
         year_metrics (dict[str, float]): The metrics of the year.
@@ -178,24 +194,31 @@ def update_metrics_summary(year_metrics: dict[str, float], *, year: int, summary
         summary_path (Path): The summary CSV, in output/huc<huc_level>/<case_study>/.
     """
 
-    row = pandas.DataFrame([{"Year": str(year), **year_metrics}])
+    write_csv_atomically(
+        pandas.DataFrame([{"Year": str(year), **year_metrics}]), summary_path.parent / str(year) / summary_path.name
+    )
 
-    if summary_path.exists():
-        summary = pandas.read_csv(summary_path, dtype={"Year": str})
-        summary = summary[~summary["Year"].isin([str(year), "Average"])]
-        summary = pandas.concat([summary, row], ignore_index=True)
-    else:
-        summary = row
+    def year_files() -> dict[Path, int]:
+        return {
+            path: path.stat().st_mtime_ns
+            for path in sorted(summary_path.parent.glob(f"*/{summary_path.name}"))
+            if path.parent.name.isdigit()
+        }
 
-    summary = summary.sort_values("Year", key=lambda years: years.astype(int))
+    while True:
+        read_files = year_files()
+        summary = pandas.concat(
+            [pandas.read_csv(path, dtype={"Year": str}, float_precision="round_trip") for path in read_files],
+            ignore_index=True,
+        ).sort_values("Year", key=lambda years: years.astype(int))
 
-    average = summary.drop(columns="Year").mean().to_frame().T
-    average.insert(0, "Year", "Average")
+        average = summary.drop(columns="Year").mean().to_frame().T
+        average.insert(0, "Year", "Average")
 
-    # the process ID keeps concurrent runs from sharing a temporary file
-    temporary_path = summary_path.with_name(f"{summary_path.name}.{os.getpid()}.tmp")
-    pandas.concat([summary, average], ignore_index=True).to_csv(temporary_path, index=False)
-    temporary_path.replace(summary_path)
+        write_csv_atomically(pandas.concat([summary, average], ignore_index=True), summary_path)
+
+        if year_files() == read_files:
+            break
 
 
 def run(
@@ -215,8 +238,8 @@ def run(
     construction. They show that the run keeps the totals, not how well it places water in each HUC. score_holdout
     measures placement.
 
-    Writes comparison.csv and comparison.gpkg to output/huc<huc_level>/<case_study>/<year>/ (see evaluate_zonal_sums),
-    and updates output/huc<huc_level>/<case_study>/metrics.csv.
+    Writes comparison.csv, comparison.gpkg and metrics.csv to output/huc<huc_level>/<case_study>/<year>/ (see
+    evaluate_zonal_sums), and updates output/huc<huc_level>/<case_study>/metrics.csv.
 
     Parameters:
         predicted_data (numpy_typing.NDArray[numpy.float32]): The disaggregated raster, NaN as nodata.
@@ -256,7 +279,8 @@ def score_holdout(
     """
     Scores a run below HUC-12 against the HUC-12 statistics, which the run doesn't use.
 
-    Writes holdout_comparison.csv and holdout_comparison.gpkg to output/huc<huc_level>/<case_study>/<year>/ and updates
+    Writes holdout_comparison.csv, holdout_comparison.gpkg and holdout_metrics.csv to
+    output/huc<huc_level>/<case_study>/<year>/ and updates
     output/huc<huc_level>/<case_study>/holdout_metrics.csv. Most HUC-12s have no water and are easy to score, so the
     metrics also cover only the HUC-12s with water (Wet_*). Report these next to the metrics for all HUC-12s. The
     Initial_* metrics score the initial estimates, so the difference shows what disaggregation adds.
