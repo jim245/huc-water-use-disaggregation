@@ -1,14 +1,7 @@
-# TODO: remove
-.cenv/
-.claude/
-.conda-pkgs/
-.vscode/
-diagnostics/
+### Repo-Specific ###
+.conda/
 input/
 output/
-manuscripts/
-*.txt
-*.bak
 
 ### Linux ###
 *~
