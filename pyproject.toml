@@ -1,0 +1,26 @@
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["D100", "D101", "D102", "D103", "F", "I"]
+
+[tool.basedpyright]
+include = ["*.py", "utilities"]
+venvPath = "."
+venv = ".conda"
+reportUnnecessaryCast = "error"
+failOnWarnings = false
+
+[tool.vulture]
+# vulture doesn't expand globs, so a new top-level module must be added here
+paths = [
+  "main.py",
+  "dasymetric_mapping.py",
+  "pycnophylactic_interpolation.py",
+  "disaggregation.py",
+  "evaluation.py",
+  "utilities",
+]
+# Keras calls this Sequence method at the end of each epoch
+ignore_names = ["on_epoch_end"]

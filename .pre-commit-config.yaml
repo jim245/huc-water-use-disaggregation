@@ -1,0 +1,32 @@
+# The hooks run the tools in .conda, so environment.yaml pins every version. Install once per clone with
+# `.conda/bin/pre-commit install`.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: .conda/bin/ruff check --fix
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: ruff format
+        entry: .conda/bin/ruff format
+        language: system
+        types: [python]
+      - id: basedpyright
+        name: basedpyright
+        entry: .conda/bin/basedpyright
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: vulture
+        name: vulture
+        entry: .conda/bin/vulture
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: editorconfig-checker
+        name: editorconfig-checker
+        entry: .conda/bin/ec
+        language: system
+        types: [text]
