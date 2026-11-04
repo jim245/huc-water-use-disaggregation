@@ -23,7 +23,7 @@ def run(huc2s: Sequence[str] = ("14", "15")) -> None:
 
     For each HUC-2, extracts the EXTRACTED_PREFIXES shapefiles to input/HUC/<huc2>/Shape/.
 
-    The results use the WBD files downloaded on 2026-03-11. The source has only the latest release.
+    The results use the WBD files downloaded on 2026-11-04. The source has only the latest release.
 
     Parameters:
         huc2s (Sequence[str] = ("14", "15")): The HUC-2 IDs, without zero-padding.
