@@ -255,10 +255,10 @@ def render(
         ],
     )
     if VMAX_PERCENTILE is not None:
-        # label the cap, so readers see where the top color starts. Skip the ticks near the cap, because their labels
-        # would overlap the cap label
+        # label the cap, so readers see where the top color starts. Skip the ticks near the cap, measured along the bar,
+        # because their labels would overlap the cap label
         lo = LOG_VMIN if LOG else vmin
-        ticks = [t for t in cbar.get_ticks() if lo <= t < vmax * 0.8]
+        ticks = [t for t in cbar.get_ticks() if lo <= t < vmax and cbar.norm(t) <= 0.95]
         labels = [f"$10^{{{round(numpy.log10(t))}}}$" if LOG else f"{t:g}" for t in ticks]
         cbar.set_ticks(ticks + [vmax], labels=labels + [f"{vmax:.2g}"])
     cbar.set_label(colorbar_label, fontsize=20)
@@ -305,15 +305,15 @@ def _read_detail_view(detail_huc2s: Sequence[str], grid: raster_utilities.Grid) 
 
 def _finish_panel(ax: Axes, letter: str) -> None:
     """
-    Clears a panel's ticks and draws its letter in the top left corner.
+    Clears a panel's ticks and axis labels, and draws its letter in the top left corner.
 
     Parameters:
         ax (Axes): The panel.
         letter (str): The panel's letter.
     """
 
-    ax.set_xticks([])
-    ax.set_yticks([])
+    # GeoDataFrame.plot labels the axes from the CRS
+    _ = ax.set(xticks=[], yticks=[], xlabel="", ylabel="")
     ax.text(
         0.01,
         0.99,
