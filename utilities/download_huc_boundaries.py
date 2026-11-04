@@ -14,9 +14,7 @@ from utilities import raster_utilities
 # applies to each socket read, not to the whole download
 DOWNLOAD_TIMEOUT_SECONDS = 60
 
-EXTRACTED_PREFIXES = tuple(
-    f"Shape/WBDHU{huc_level}." for huc_level in raster_utilities.HUC_LEVELS
-)
+EXTRACTED_PREFIXES = tuple(f"Shape/WBDHU{huc_level}." for huc_level in raster_utilities.HUC_LEVELS)
 
 
 def run(huc2s: Sequence[str] = ("14", "15")) -> None:

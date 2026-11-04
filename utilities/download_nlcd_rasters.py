@@ -45,9 +45,7 @@ def run(year: int = 2000) -> None:
             archive.extractall(temporary_directory)
 
         # the GeoTIFF moves last
-        for file in sorted(
-            Path(temporary_directory).iterdir(), key=lambda file: file.name == tif_path.name
-        ):
+        for file in sorted(Path(temporary_directory).iterdir(), key=lambda file: file.name == tif_path.name):
             # a concurrent run moved its complete files first. Replacing them can break that run's reads on NFS
             if not (year_directory / file.name).exists():
                 file.rename(year_directory / file.name)

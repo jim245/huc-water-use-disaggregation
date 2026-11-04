@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Literal, cast
 
 # TensorFlow reads these when it is first imported, so they must be set before the TensorFlow and Keras imports below.
-# PYTHONHASHSEED isn't set here, because Python reads it only at interpreter start-up.
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["TF_DETERMINISTIC_OPS"] = "1"
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
@@ -181,14 +180,10 @@ def disaggregate(
     # need a prediction
     kept_cells = (zones != 0) & estimates_valid
 
-    supported = (
-        None if support_layer is None else numpy.nan_to_num(ancillary_layers[..., support_layer], nan=0.0) > 0
-    )
+    supported = None if support_layer is None else numpy.nan_to_num(ancillary_layers[..., support_layer], nan=0.0) > 0
     prediction_cells = kept_cells if supported is None else kept_cells & supported
     kept_patches = (
-        numpy.lib.stride_tricks.sliding_window_view(prediction_cells, (patch_size, patch_size))
-        .any(axis=(2, 3))
-        .ravel()
+        numpy.lib.stride_tricks.sliding_window_view(prediction_cells, (patch_size, patch_size)).any(axis=(2, 3)).ravel()
     )
 
     ancillary_layers = ancillary_layers * numpy.dstack([zone_mask] * ancillary_layers.shape[2])

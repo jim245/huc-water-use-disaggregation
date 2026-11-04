@@ -32,9 +32,7 @@ def run(
     huc2_key = raster_utilities.huc2_cache_key(huc2s)
     output_directory = Path("input", "templates")
     output_path = str(output_directory / f"{cell_size}m_{crs_key}_{huc2_key}.tif")
-    boundary_paths = [
-        str(Path("input", "HUC", huc2, "Shape", "WBDHU2.shp")) for huc2 in huc2s
-    ]
+    boundary_paths = [str(Path("input", "HUC", huc2, "Shape", "WBDHU2.shp")) for huc2 in huc2s]
 
     if raster_utilities.is_newer(output_path, boundary_paths):
         return output_path

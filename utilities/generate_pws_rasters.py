@@ -48,9 +48,7 @@ def run(
 
     mask_directory = Path("input", "masks", "pws")
     mask_directory.mkdir(parents=True, exist_ok=True)
-    mask_path = (
-        mask_directory / f"{raster_utilities.huc2_cache_key(huc2s)}_{reprojected_crs.replace(':', '')}.gpkg"
-    )
+    mask_path = mask_directory / f"{raster_utilities.huc2_cache_key(huc2s)}_{reprojected_crs.replace(':', '')}.gpkg"
 
     if raster_utilities.is_newer(mask_path, [*boundary_paths, *wsa_paths]):
         mask = geopandas.read_file(mask_path)

@@ -29,9 +29,7 @@ def run(
         year (int | None = None): The year to write. All years in the source when None.
     """
 
-    statistics_utilities.merge(
-        "irr", SOURCE_PATH, read_annual_mgd, huc2s, huc_levels, reprojected_crs, year
-    )
+    statistics_utilities.merge("irr", SOURCE_PATH, read_annual_mgd, huc2s, huc_levels, reprojected_crs, year)
 
 
 def read_annual_mgd(source_path: Path) -> pandas.DataFrame:

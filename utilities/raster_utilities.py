@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, cast
 
 # Activating the conda environment sets PROJ_NETWORK=ON. PROJ can then download grid-based datum shifts, which move the
-# WGS84 sources (NLCD, DARTE, GDP, WorldPop) relative to a run of .cenv/bin/python without activation. Pinning it off
+# WGS84 sources (NLCD, DARTE, GDP, WorldPop) relative to a run of .conda/bin/python without activation. Pinning it off
 # keeps every run on the same transformation, with or without internet access and PROJ's grid cache
 os.environ["PROJ_NETWORK"] = "OFF"
 
@@ -175,9 +175,7 @@ def extrapolate_raster(raster_path: Path, target_year: int) -> Path:
         valid_mask = numpy.all(~numpy.isnan(stacked), axis=0)
 
     # design matrix [year, 1] shape (years, 2)
-    design = numpy.stack(
-        [numpy.array(matched_years, dtype=numpy.float64), numpy.ones(len(matched_years))], axis=1
-    )
+    design = numpy.stack([numpy.array(matched_years, dtype=numpy.float64), numpy.ones(len(matched_years))], axis=1)
 
     # solve for coefficients over valid pixels only: (2, N_valid)
     coefficients, _, _, _ = numpy.linalg.lstsq(design, stacked[:, valid_mask], rcond=None)
@@ -724,9 +722,7 @@ def reproject_raster(
     return output_path
 
 
-def templatize_geometries(
-    geometry_paths: Sequence[str], reprojected_crs: str, cell_size: int, output_path: str
-) -> str:
+def templatize_geometries(geometry_paths: Sequence[str], reprojected_crs: str, cell_size: int, output_path: str) -> str:
     """
     Rasterizes the combined extent of the provided geometries into a binary template raster.
 

@@ -168,9 +168,7 @@ def fit_cnn(
     middle_column = int(round((target_patches.shape[2] - 1) / 2))
 
     candidates = numpy.where(~numpy.isnan(target_patches.pixel(middle_row, middle_column, 0)))[0]
-    sample_ids = candidates[
-        random.choice(len(candidates), round(len(candidates) * sample_fraction), replace=False)
-    ]
+    sample_ids = candidates[random.choice(len(candidates), round(len(candidates) * sample_fraction), replace=False)]
 
     print(
         "Number of patches (all, valid middle pixel, sampled):",

@@ -100,9 +100,7 @@ def merge(
             write_year(water_use, merged_gdf, directory, huc_year)
 
 
-def write_year(
-    water_use: pandas.DataFrame, merged_gdf: geopandas.GeoDataFrame, directory: Path, year: int
-) -> None:
+def write_year(water_use: pandas.DataFrame, merged_gdf: geopandas.GeoDataFrame, directory: Path, year: int) -> None:
     """
     Writes <year>.csv and <year>.gpkg to directory.
 
@@ -145,8 +143,7 @@ def stale_years(directory: Path, years: Sequence[int], source_paths: Sequence[Pa
         year
         for year in years
         if not all(
-            raster_utilities.is_newer(str(directory / f"{year}.{extension}"), sources)
-            for extension in ("csv", "gpkg")
+            raster_utilities.is_newer(str(directory / f"{year}.{extension}"), sources) for extension in ("csv", "gpkg")
         )
     ]
 
