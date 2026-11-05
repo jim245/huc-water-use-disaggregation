@@ -1,12 +1,12 @@
 # Overview
 
-This repository is a refactor of [spdisaggregation](https://github.com/joaomigl15/spdisaggregation), adapted for water use statistics and reorganized into a single pipeline driven by [main.py](./main.py). The pipeline takes water use totals per Hydrologic Unit Code (HUC) watershed. It spatially disaggregates them into gridded estimates across the conterminous United States, at 1000 m by default. It redistributes the HUC totals in three steps: dasymetric mapping against an ancillary weighting layer, pycnophylactic smoothing, and iterative refinement. The refinement alternates a U-Net convolutional neural network and a random forest. Both train on ancillary predictors: land cover, crops, terrain slope, precipitation, on-road emissions, economic output and population. Each step keeps the total of each HUC that has cells that can hold its water, and each refinement iteration rescales to these totals. A HUC with no such cells loses its total, and the evaluation reports that water as missing.
+This repository is a refactor of [spdisaggregation](https://github.com/joaomigl15/spdisaggregation), adapted for water use statistics and reorganized into a single pipeline driven by [main.py](./main.py). The pipeline takes water use totals per Hydrologic Unit Code (HUC) watershed. It spatially disaggregates them into gridded estimates across the conterminous United States, redistributing the HUC totals in three steps: dasymetric mapping against an ancillary weighting layer, pycnophylactic smoothing, and iterative refinement. The refinement alternates a U-Net convolutional neural network and a random forest. Both train on ancillary predictors: land cover, crops, terrain slope, precipitation, on-road emissions, economic output and population. Each step keeps the total of each HUC that has cells that can hold its water, and each refinement iteration rescales to these totals. The evaluation reports the water of a HUC with no such cells as missing.
 
 # Setup
 
-Use [conda](https://docs.conda.io/projects/conda/en/latest/user-guide/install/) for package and environment management (recommended).
+Use [conda](https://docs.conda.io/projects/conda/en/latest/user-guide/install/) for package and environment management.
 
-> The environment is for linux-64 with an NVIDIA GPU that CUDA 13 supports, with driver 580 or later. On a machine without a GPU, such as a login node, set `CONDA_OVERRIDE_CUDA=13.0` before you create the environment.
+> The environment requires linux-64 with an NVIDIA GPU that CUDA 13 supports, with driver 580 or later. On a machine without a GPU, set `CONDA_OVERRIDE_CUDA=13.0` before you create the environment.
 
 From the repository root, run `conda env create -f environment.yaml -p .conda` to create the environment in `.conda`, and `conda activate ./.conda` to activate it.
 
@@ -14,7 +14,7 @@ Run `.conda/bin/pre-commit install` once to install the [pre-commit hooks](./.pr
 
 ## Folder Structure
 
-All inputs are in `input/`. The pipeline downloads the HUC boundaries, the NLCD rasters and the state boundaries. Put all other datasets at the paths in [Datasets Used](#datasets-used) before the run. The pipeline also writes its caches to `input/`.
+All inputs are in `input/`. The pipeline downloads the HUC boundaries, the NLCD rasters and the state boundaries. Put all other datasets at the paths in [Datasets Used](#datasets-used) before the run. The pipeline also writes its caches to `input/`, so the folder must be writable and grows to several hundred GB.
 
 The pipeline writes its outputs to `output/huc{huc_level}/{case_study}/{year}/{case_study}_huc{huc_level}_{year}.tif` in million gallons per day per cell. Each case study's yearly metrics are in `output/huc{huc_level}/{case_study}/metrics.csv`.
 
@@ -24,8 +24,8 @@ The pipeline writes its outputs to `output/huc{huc_level}/{case_study}/{year}/{c
 
 1. Data preparation:
    - Download the [HUC boundaries](./utilities/download_huc_boundaries.py), the [NLCD rasters](./utilities/download_nlcd_rasters.py) and the [state boundaries](./utilities/figure_utilities.py), and [generate the template raster](./utilities/generate_template_raster.py).
-   - Associate per-HUC water use statistics with HUC boundary polygons [[1]](./utilities/merge_irr_statistics.py)[[2]](./utilities/merge_pws_statistics.py)[[3]](./utilities/merge_pwscu_statistics.py). The three scripts share [statistics_utilities.py](./utilities/statistics_utilities.py).
-   - Generate the ancillary layers of the case study [[1]](./utilities/generate_irr_rasters.py)[[2]](./utilities/generate_pws_rasters.py). Both scripts use [raster_utilities.py](./utilities/raster_utilities.py).
+   - Associate per-HUC water use statistics with HUC boundary polygons [[1]](./utilities/merge_irr_statistics.py)[[2]](./utilities/merge_pws_statistics.py)[[3]](./utilities/merge_pwscu_statistics.py).
+   - Generate the ancillary layers of the case study [[1]](./utilities/generate_irr_rasters.py)[[2]](./utilities/generate_pws_rasters.py).
 2. Spread each HUC total over its cells with [dasymetric mapping](./dasymetric_mapping.py).
 3. Smooth the dasymetric estimates with [pycnophylactic interpolation](./pycnophylactic_interpolation.py). The result is the initial estimates.
 4. Iteratively refine the initial estimates using the [disaggregation](./disaggregation.py) regression model.
