@@ -153,7 +153,9 @@ def render(
     """
     Renders one column of panels per raster, all sharing one color scale, and writes the figure to output_path.
 
-    Downloads the state boundaries first if they are missing (see download_state_boundaries).
+    Downloads the state boundaries first if they are missing (see download_state_boundaries). Draws only the cells
+    inside the state boundaries, which follow the shoreline, so lakes and the ocean show as nodata. A lake HUC with
+    water in the statistics has zero cells, which would otherwise show in the zero color.
 
     Parameters:
         columns (Sequence[NDArray[numpy.float32]]): The rasters, NaN as nodata, one per column. At least one.
@@ -175,6 +177,9 @@ def render(
     download_state_boundaries()
     states = geopandas.read_file(STATE_BOUNDARIES_PATH).to_crs(grid.crs)
     states = states[states.intersects(grid_box)].clip(grid_box)
+
+    land = geometry_mask(states.geometry, transform=grid.transform, invert=True, out_shape=grid.shape)
+    columns = [numpy.where(land, data, numpy.nan) for data in columns]
 
     detail_view = _read_detail_view(detail_huc2s, grid) if detail_huc2s else None
 
