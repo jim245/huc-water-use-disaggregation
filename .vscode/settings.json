@@ -22,6 +22,5 @@
     "**/output": true
   },
   "python-envs.defaultEnvManager": "ms-python.python:conda",
-  "python-envs.defaultPackageManager": "ms-python.python:conda",
-  "python.analysis.typeCheckingMode": "off"
+  "python-envs.defaultPackageManager": "ms-python.python:conda"
 }
