@@ -66,6 +66,35 @@ Example:
 python main.py --case_study pws-cu --year 2009 --huc2s 14 15 --huc_level 12 --crs EPSG:5070 --cell_size 1000
 ```
 
+# Adding a Case Study
+
+A case study is one sector and one measure, for example irrigation water consumption. A new case study needs a statistics script, an ancillary layer script, a settings entry and a branch in [main.py](./main.py). Stages 2-6 need no change, and they accept any number of layers.
+
+1. Statistics:
+   - Put the source file in `input/statistics/`, and add it to [Water Use Statistics](#water-use-statistics).
+   - Copy [merge_irr_statistics.py](./utilities/merge_irr_statistics.py) for a wide source (one column per HUC-12), or [merge_pwscu_statistics.py](./utilities/merge_pwscu_statistics.py) for a long source (one row per HUC-12 and date). Name the copy `utilities/merge_<case_study>_statistics.py`.
+   - Its `read_annual_mgd` returns one row per year and one column per HUC-12, in annual mean mgd. Use 12-digit code strings with their leading zeros as the column names. Apply `huc12_crosswalk.remap_columns` (wide) or `huc12_crosswalk.remap_rows` (long) in this function. Replace sentinel codes before the crosswalk, because the crosswalk splits each value.
+   - To get annual mean mgd from monthly mean mgd, take the day-weighted mean of the months, not their sum ([merge_pws_statistics.py](./utilities/merge_pws_statistics.py)). From monthly volumes, sum the months and divide by the days in the year ([merge_pwscu_statistics.py](./utilities/merge_pwscu_statistics.py)).
+   - `statistics_utilities.merge` gives NaN to a HUC with no statistics. If the source leaves out the HUCs with no water use, set `absent_is_zero=True`.
+   - If the merge stops because a HUC-12 code has no polygon, the code isn't in the downloaded WBD. Add a row for each new HUC-12 that covers it to [huc12_crosswalk.csv](./utilities/huc12_crosswalk.csv), with the areas from the source in its header.
+2. Ancillary layers:
+   - Copy [generate_pws_rasters.py](./utilities/generate_pws_rasters.py) or [generate_irr_rasters.py](./utilities/generate_irr_rasters.py) to `utilities/generate_<case_study>_rasters.py`. Its `run` returns a list of layers from `raster_utilities.prepare_raster_layer`.
+   - Layer 0 is the dasymetric weight layer. Normalize it with `"max"`.
+   - Cells outside the mask can't receive water. A HUC with no cells in the mask loses its total, and evaluation reports this water as missing.
+   - If the mask comes from the statistics, use the statistics at `huc_level`, as irr does. A mask from the HUC-12 statistics would tell a holdout run which HUC-12s have no water.
+   - Give each layer a unique `raster_title`. The title names the cached file in `input/<dataset>/reprojected/`. The cache doesn't detect a code change, so delete these files after you change the source, the filter or the resampling method.
+   - Add each new dataset to [Ancillary Inputs](#ancillary-inputs).
+3. Settings: add a `CaseStudy` entry to `CASE_STUDIES` in [raster_utilities.py](./utilities/raster_utilities.py).
+   - The key is the `--case_study` value and a folder name in `input/` and `output/`. Use lowercase letters and hyphens.
+   - `sector` and `measure` make the figure title. `first_year` and `last_year` are the years of the source statistics.
+   - `support_layer` is the index of the layer whose cells > 0 can receive water. Use `None` when the mask already limits the cells, as pws does.
+4. Orchestrator: in [main.py](./main.py), import the two scripts and add a branch to the `match case_study` block of stage 1. Pass `huc_levels=merge_levels`, so that a level 8 run also writes the HUC-12 statistics for its holdout score. The command lines of `main.py` and [evaluation.py](./evaluation.py) read `CASE_STUDIES`, so they accept the new case study.
+5. Checks:
+   - Run one year with `--prepare_only` on a small region, for example `--huc2s 14 15`. Then run that year at `--huc_level 12` and at `--huc_level 8`.
+   - In `metrics.csv`, `Missing_mgd` must be near 0. A large value shows HUCs with no cells in the mask.
+   - Copy the new `python main.py --help` output into the usage block of this README.
+   - Run `.conda/bin/pre-commit run --all-files`.
+
 # Datasets Used
 
 Paths are relative to `input/`. The pipeline downloads the datasets marked "Downloaded". When a raster has no file for the year, the pipeline extrapolates one from the years that do exist.
