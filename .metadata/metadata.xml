@@ -1,0 +1,487 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Validate https://www1.usgs.gov/mp/index.php
+  Search TODO before submitting.
+-->
+<metadata>
+  <idinfo>
+    <citation>
+      <citeinfo>
+        <origin>Eric C. Sjöstedt</origin>
+        <origin>Jade I. Meskill</origin>
+        <origin>Haley E. Berger</origin>
+        <origin>Laura Guerrero</origin>
+        <origin>Aiden Harper</origin>
+        <origin>Haley R. Kloss</origin>
+        <origin>Richard R. Rushforth</origin>
+        <origin>Jay Diffendorfer</origin>
+        <origin>Kenneth Bagstad</origin>
+        <origin>Benjamin R. Ruddell</origin>
+        <!-- TODO: replace with actual publication date once assigned -->
+        <pubdate>Unknown</pubdate>
+        <title>Spatially disaggregated 1 km rasters of annual and monthly modeled thermoelectric power, public water supply, and irrigation water use estimates for the conterminous United States, 2000 to 2020.</title>
+        <geoform>raster digital data</geoform>
+        <pubinfo>
+          <pubplace>Denver, CO</pubplace>
+          <publish>U.S. Geological Survey</publish>
+        </pubinfo>
+        <onlink>TODO - published DOI link</onlink>
+      </citeinfo>
+    </citation>
+    <descript>
+      <abstract>This data release provides gridded estimates of thermoelectric power, public water supply, and irrigation water use across the conterminous United States. The grid has 1000-meter cells. The release covers six case studies and multiple years, and it uses two independent spatial disaggregation approaches.
+
+Five case studies were produced by spatial disaggregation of Hydrologic Unit Code (HUC) level water use statistics onto the grid:
+  irr: irrigation consumptive use, 2000-2020
+  pws-cu: public-supply consumptive use, 2009-2020
+  pws-gw: public-supply groundwater withdrawals, 2000-2020
+  pws-sw: public-supply surface-water withdrawals, 2000-2020
+  pws-tot: total public-supply withdrawals, 2000-2020
+The disaggregation uses ancillary land cover, crop, terrain, socioeconomic, and climate datasets. It redistributes the reported HUC-12 water use totals in three stages:
+  1. Dasymetric mapping apportions the total water use of each HUC to its grid cells, in proportion to an ancillary weighting layer.
+  2. Pycnophylactic interpolation spatially smooths the dasymetric surface and preserves the reported total of each HUC.
+  3. Iterative refinement alternates a convolutional neural network (U-Net) and a random forest model, trained on ancillary predictor layers. After each iteration, a mass-preservation rescaling step makes the grid cells within each HUC sum to the reported total of that HUC.
+
+The sixth case study (te) is thermoelectric power plant water consumption and withdrawal, 2008-2020, monthly and annual. It was produced by a different, footprint-based method. The footprint of a plant is the area covered by its OpenStreetMap features, obtained via the Overpass API. Plant codes and point locations, mainly from the 2020 EIA-860 form, were used to find the footprints. The reported monthly water use of each plant was apportioned to the 1000-meter cells, in proportion to the footprint area in each cell. The te case study uses the same grid, coordinate reference system, and HUC-2-derived land extent as the other five case studies. Thus all six case studies align to identical grid cells.</abstract>
+      <purpose>To provide fine-resolution (1000-meter) gridded estimates of thermoelectric power, public water supply, and irrigation water use across the conterminous United States. These estimates support analyses that require water use information at spatial resolutions finer than the source statistics. The HUC-level water use statistics were spatially disaggregated with a machine-learning-based dasymetric disaggregation approach. The power-plant-level water use statistics were spatially disaggregated with a plant-footprint proportional allocation approach.</purpose>
+      <supplinf>This data release includes one GeoTIFF raster per case study and year for the irr, pws-cu, pws-gw, pws-sw, and pws-tot case studies. These rasters are named &lt;case_study&gt;_huc12_&lt;year&gt;.tif. &lt;case_study&gt; is one of irr, pws-cu, pws-gw, pws-sw, or pws-tot, and &lt;year&gt; is the four-digit calendar year.
+
+The thermoelectric (te) case study is instead provided as monthly and annual GeoTIFFs, with these names:
+  &lt;year&gt;-&lt;month&gt;-consumption.tif
+  &lt;year&gt;-&lt;month&gt;-withdrawal.tif
+  &lt;year&gt;-annual-consumption.tif
+  &lt;year&gt;-annual-withdrawal.tif
+&lt;month&gt; is the two-digit calendar month (01-12), and &lt;year&gt; ranges from 2008 to 2020.
+
+Every raster in this data release has a single band ("Value"). The band reports water use in million gallons per day (MGD) per 1000-meter grid cell. NaN is the nodata value. The entity and attribute overview lists the cells that are NaN. The te rasters are 64-bit floating point, and the other rasters are 32-bit floating point. See the accompanying data dictionary (data_dictionary.csv) for the field descriptions and value ranges of each case study.
+
+Ancillary predictor layers used during disaggregation, by case study:
+  irr: NLCD cultivated/planted land cover fraction (classes 81-82), USDA Cropland Data Layer (CDL), PRISM annual precipitation, LANDFIRE slope.
+  pws-cu, pws-gw, pws-sw, pws-tot: NLCD developed land cover fraction (classes 21-24), DARTE on-road transportation emissions, gridded GDP, WorldPop gridded population.
+  te: OpenStreetMap plant footprints (obtained via the Overpass API) and power plant point locations. The te method uses them directly for proportional allocation within each plant, not as machine-learning predictors.
+
+Source water use statistics, by case study:
+  irr: Irr_CU_HUC12_Tot_annual_2000_2020.csv (annual irrigation consumptive use by HUC-12).
+  pws-cu: ps_mon_CU_ETr.csv (monthly public-supply consumptive use by HUC-12, derived from remote-sensing evapotranspiration estimates, converted to MGD).
+  pws-gw / pws-sw / pws-tot: PS_HUC12_GW_2000_2020.csv / PS_HUC12_SW_2000_2020.csv / PS_HUC12_Tot_2000_2020.csv (monthly mean public-supply withdrawals by HUC-12, in MGD. The annual value is the day-weighted mean of the months).
+  te: published_monthly_thermoelectric_water_use_estimates_2008-2020.csv (monthly power-plant water consumption and withdrawal). Source: Galanter, A.E., Gorman Sanisaca, L.E., Skinner, K.D., Harris, M.A., Diehl, T.H., Chamberlin, C.A., Mccarthy, B.A., Halper, A.S., Niswonger, R., Stewart, J.S., Markstrom, S.L., Embry, I.A., and Worland, S.C., 2023, Thermoelectric-power water use reanalysis for the 2008-2020 period by power plant, month, and year for the conterminous United States: U.S. Geological Survey data release, https://doi.org/10.5066/P9ZE2FVM. That release builds on condenser-duty estimates from a second release: Gorman Sanisaca, L.E., Galanter, A.E., Skinner, K.D., Harris, M.A., Diehl, T.H., Halper, A.S., Mohs, T.G., Roland, V.L., Stewart, J.S., and Niswonger, R., 2023, Thermoelectric-power condenser duty estimates by month and cooling type for use to calculate water use by power plant for the 2008-2020 reanalysis period for the conterminous United States: U.S. Geological Survey data release, https://doi.org/10.5066/P9XG876W.
+  te: te_plants.csv (thermoelectric plant codes and locations, https://www.sciencebase.gov/catalog/item/63adc826d34e92aad3ca5af4).
+  te: 2___Plant_Y2020.xlsx (2020 EIA-860 plant codes and locations).
+
+https://github.com/Sjostedt-eric/usgs_cnn_model
+https://github.com/Sjostedt-eric/usgs_disaggregation
+      </supplinf>
+    </descript>
+    <timeperd>
+      <timeinfo>
+        <rngdates>
+          <begdate>20000101</begdate>
+          <enddate>20201231</enddate>
+        </rngdates>
+      </timeinfo>
+      <current>Ground Condition</current>
+    </timeperd>
+    <status>
+      <progress>Complete</progress>
+      <update>None Planned</update>
+    </status>
+    <spdom>
+      <bounding>
+        <westbc>-129.5158</westbc>
+        <eastbc>-62.9930</eastbc>
+        <northbc>54.7122</northbc>
+        <southbc>22.3254</southbc>
+      </bounding>
+    </spdom>
+    <keywords>
+      <theme>
+        <themekt>None</themekt>
+        <themekey>water use</themekey>
+        <themekey>water withdrawals</themekey>
+        <themekey>public water supply</themekey>
+        <themekey>irrigation</themekey>
+        <themekey>consumptive use</themekey>
+        <themekey>thermoelectric power</themekey>
+        <themekey>power plant cooling water</themekey>
+        <themekey>power plant footprints</themekey>
+        <themekey>spatial disaggregation</themekey>
+        <themekey>dasymetric mapping</themekey>
+        <themekey>pycnophylactic interpolation</themekey>
+        <themekey>convolutional neural network</themekey>
+        <themekey>hydrologic unit code</themekey>
+      </theme>
+      <theme>
+        <themekt>USGS Metadata Identifier</themekt>
+        <themekey>TODO - "USGS:abcdef1234567890"</themekey>
+      </theme>
+      <place>
+        <placekt>None</placekt>
+        <placekey>United States</placekey>
+        <placekey>Conterminous United States (CONUS)</placekey>
+      </place>
+    </keywords>
+    <accconst>None</accconst>
+    <useconst>Unless otherwise stated, all data, metadata and related materials are considered to satisfy the quality standards relative to the purpose for which the data were collected. Although these data and associated metadata have been reviewed for accuracy and completeness and approved for release by the U.S. Geological Survey (USGS), no warranty expressed or implied is made regarding the display or utility of the data on any other system or for general or scientific purposes, nor shall the act of distribution constitute any such warranty.</useconst>
+    <ptcontac>
+      <cntinfo>
+        <cntperp>
+          <cntper>Benjamin Ruddell</cntper>
+          <cntorg>Northern Arizona University</cntorg>
+        </cntperp>
+        <cntpos>Professor</cntpos>
+        <cntaddr>
+          <addrtype>physical</addrtype>
+          <address>1100 S. Beaver St</address>
+          <city>Flagstaff</city>
+          <state>AZ</state>
+          <postal>86011</postal>
+          <country>US</country>
+        </cntaddr>
+        <cntvoice>n/a</cntvoice>
+        <cntemail>Benjamin.Ruddell@nau.edu</cntemail>
+      </cntinfo>
+    </ptcontac>
+    <native>n/a</native>
+  </idinfo>
+  <dataqual>
+    <attracc>
+      <attraccr>Two evaluations were performed for the irr, pws-cu, pws-gw, pws-sw, and pws-tot case studies.
+
+Mass preservation: For every case study and year, the final rasters were summed over HUC-12 polygons. The sums were compared with the reported HUC-12 totals, which were the model input. Each iteration rescales grid cells to these totals, so the sums matched closely. The coefficient of determination (R2) was at least 0.99999. The mean absolute error (MAE) per HUC-12 was at most 1.2e-8 million gallons per day (MGD). Reported water use in HUC-12s that contain no valid grid cells is not represented in the rasters. For the public-supply case studies, most of these HUC-12s are outside the public water-supply service area mask. For irr, these HUC-12s have no NLCD cultivated/planted land, so their dasymetric weights sum to 0. Across all years, this water was 0.085 to 0.14 percent of the reported total for irr. For the public-supply case studies, it was 0.09 to 0.21 percent. This comparison confirms mass balance. The rasters are fitted to these totals, so the comparison does not measure how accurately water use is placed within each HUC-12.
+
+Hold-out validation: For every case study and year, the full pipeline was run again with only HUC-8 totals. The full pipeline is dasymetric mapping, pycnophylactic interpolation, and iterative CNN/random forest refinement. For irr, the case-study mask of these runs was made from the HUC-8s with nonzero reported use. The resulting rasters were summed over HUC-12 polygons and compared with the reported HUC-12 totals, which these runs did not use. Thus the scores estimate how accurately the method places water use from HUC-8 totals into HUC-12s. These HUC-8-based rasters were produced only for this validation and are not included in this data release. The scored HUC-12s are those with a reported total and at least one valid grid cell. The results are the mean R2 across years (with the range across years) and the mean MAE per HUC-12:
+  irr (2000-2020, 69,300 to 71,800 HUC-12s): R2 0.891 (0.858-0.914), MAE 0.44 MGD
+  pws-cu (2009-2020, 30,719 HUC-12s): R2 0.825 (0.799-0.853), MAE 0.043 MGD
+  pws-gw (2000-2020, 30,717 HUC-12s): R2 0.847 (0.839-0.851), MAE 0.26 MGD
+  pws-sw (2000-2020, 30,717 HUC-12s): R2 0.803 (0.788-0.825), MAE 0.30 MGD
+  pws-tot (2000-2020, 30,717 HUC-12s): R2 0.870 (0.862-0.878), MAE 0.39 MGD
+The initial dasymetric/pycnophylactic estimates alone scored a mean R2 of 0.899 (irr), 0.827 (pws-cu), 0.827 (pws-gw), 0.741 (pws-sw), and 0.812 (pws-tot). For pws-gw, pws-sw, and pws-tot, the CNN/random forest refinement increased R2 and decreased MAE in every year. For pws-cu, the refinement decreased MAE in every year, but increased R2 in only 5 of 12 years. For irr, the refinement decreased MAE in 18 of 21 years, but increased R2 in only 6 of 21 years. Most irr HUC-12s have a reported total of 0: about 24,600 HUC-12s have nonzero use. For only the HUC-12s with nonzero reported use, the mean R2 was 0.885 (irr), 0.824 (pws-cu), 0.849 (pws-gw), 0.795 (pws-sw), and 0.869 (pws-tot). The released rasters are disaggregated from HUC-12 totals. No independent reference data were available within HUC-12s, so the accuracy of the rasters within HUC-12s was not directly assessed. It can be different from these scores.
+
+The thermoelectric (te) case study allocates each plant's reported total to the cells its footprint intersects. Thus the cell sums of each plant equal the reported plant total. The exception is the part of a footprint outside the land cells of the template grid. Two plants have such a part, at most 0.45 percent of the footprint area. The check covered the plants in the 2020 EIA-860 form and all months from 2008 to 2020. The water in these parts was at most 0.0004 percent of the national monthly total. No independent accuracy assessment was performed.</attraccr>
+    </attracc>
+    <logic>No formal logical accuracy tests were conducted.</logic>
+    <complete>Complete</complete>
+    <posacc>
+      <horizpa>
+        <horizpar>No formal positional accuracy tests were conducted.</horizpar>
+      </horizpa>
+      <vertacc>
+        <vertaccr>No formal positional accuracy tests were conducted.</vertaccr>
+      </vertacc>
+    </posacc>
+    <lineage>
+      <procstep>
+        <procdesc>HUC boundary acquisition and template raster generation: Watershed Boundary Dataset (WBD) HUC-2 through HUC-12 polygon boundaries were obtained for each HUC-2 region. The WBD files were downloaded on 2026-11-04. The source supplies only the latest WBD release. A 1000-meter template raster was generated from the combined HUC-2 boundaries. The boundaries were reprojected to an Albers Equal Area projection (EPSG:5070), and their extent was rasterized. This template defines the pixel grid, transform, and coordinate reference system of every later raster in the pipeline. The thermoelectric (te) case study builds its template in the same way, so all six case studies share an identical grid.</procdesc>
+        <procdate>20261104</procdate>
+      </procstep>
+      <procstep>
+        <procdesc>Ancillary predictor layer preparation: For each case study and year, the ancillary raster layers were obtained and prepared in five steps. (1) Some layers were filtered to specific classes. Examples are NLCD developed classes 21-24 for the public-supply case studies and NLCD cultivated/planted classes 81-82 for irr. (2) The layers were reprojected to EPSG:5070 and resampled onto the template grid with sum, average, or mode resampling, depending on the layer. (3) The layers were clipped to a case-study-specific mask. For pws-cu, pws-gw, pws-sw, and pws-tot, the mask is a public water-supply service area boundary. For irr, the mask is a dissolved boundary of the HUCs with nonzero reported irrigation use. These HUCs are at the HUC level of the statistics of the run. (4) The layers were normalized by division by the maximum, min-max scaling, or log1p scaling, depending on the layer. (5) The result is the final predictor stack of the CNN/random forest models.</procdesc>
+        <procdate>20261104</procdate>
+      </procstep>
+      <procstep>
+        <procdesc>Water use statistics preparation: Reported monthly or annual water use statistics were read from the source CSV file for the case study (see supplinf). For irr, the codes 999 (no irrigated land in the HUC-12) and 888 (irrigated land, but no OpenET evapotranspiration value) were set to 0. Some HUC-12 codes in the statistics are not in the Watershed Boundary Dataset version used here. Their statistics were moved to the HUC-12s that replaced them, in proportion to the overlap area (huc12_crosswalk.csv in the code repository). For pws-gw, pws-sw, and pws-tot, the annual value is the day-weighted mean of the monthly mean MGD values. For pws-cu, the monthly volumes were summed and converted to MGD. The annual values were filtered to the relevant HUC-2 region and joined to the HUC polygon geometries (HUC-12, reprojected to EPSG:5070). The result is one statistics layer per year, used as the disaggregation target.</procdesc>
+        <procdate>20261104</procdate>
+      </procstep>
+      <procstep>
+        <procdesc>Dasymetric mapping: The reported total water use of each HUC was apportioned to the cells of that HUC, in proportion to the first ancillary layer. The result is an initial fine-grid estimate that exactly sums to the reported HUC total (mass-preserving by construction).</procdesc>
+        <procdate>20261106</procdate>
+      </procstep>
+      <procstep>
+        <procdesc>Pycnophylactic interpolation: The dasymetric surface was spatially smoothed with a single pass of four-neighbor averaging. Then the values were rescaled per HUC, so that the grid-cell values of each HUC continued to sum to its reported total. This step reduces the sharp discontinuities at HUC boundaries from dasymetric mapping, and it preserves mass balance.</procdesc>
+        <procdate>20261106</procdate>
+      </procstep>
+      <procstep>
+        <procdesc>Iterative CNN/random forest disaggregation refinement: The refinement starts from the pycnophylactic-interpolation surface and runs for 30 iterations. Odd iterations use a patch-based U-Net convolutional neural network, and even iterations use a random forest regression model. Each model was trained on the ancillary predictor stack to predict grid-cell water use, with the estimates of the previous iteration as targets. After each prediction, values were rescaled per HUC to preserve the reported HUC total (mass preservation). Cells with no value in the initial estimate were held at nodata. For irr, only cells with a nonzero NLCD cultivated/planted fraction can receive water. The map of the last iteration is the final output raster.</procdesc>
+        <procdate>20261106</procdate>
+      </procstep>
+      <procstep>
+        <procdesc>Thermoelectric power plant geometry acquisition: The point location of each plant was taken from the 2020 EIA-860 form. Plants not in that form (for example, plants retired before 2020) used the location in te_plants.csv. The locations of four plants were corrected by hand. For most plants, the footprint is the union of the OpenStreetMap features that have the plant's EIA code in their ref:US:EIA tag. The Overpass API supplied these features. For a hand-selected list of plants, the footprint is instead the union of the power-plant features within a plant-specific radius of the point location. Where no footprint was found, a circle centered on the plant's point location was used. Its area is the median area of the footprints that were found.</procdesc>
+        <procdate>20260923</procdate>
+      </procstep>
+      <procstep>
+        <procdesc>Thermoelectric water use statistics preparation: The reported monthly power-plant water consumption and withdrawal estimates are in million gallons per day (see supplinf). They were joined to the plant point locations and footprint geometries by EIA plant code.</procdesc>
+        <procdate>20260923</procdate>
+      </procstep>
+      <procstep>
+        <procdesc>Thermoelectric footprint disaggregation: This step used each power plant, month, and year with nonzero reported consumption or withdrawal. The reported value was apportioned to template grid cells, in proportion to the fraction of the total footprint area of the plant in each cell. Thus the sum across all intersected cells equals the reported plant total for that month. The part of a footprint outside the land cells of the template grid gets no water. Grid cells within the land extent of the template that intersect no plant footprint were assigned a value of 0. Cells outside the land extent of the template were held at nodata (NaN).</procdesc>
+        <procdate>20260923</procdate>
+      </procstep>
+      <procstep>
+        <procdesc>Thermoelectric monthly-to-annual aggregation: Annual consumption and withdrawal rasters were produced for each year as the cell-by-cell day-weighted mean of the corresponding 12 monthly rasters. Thus the annual values are also in MGD.</procdesc>
+        <procdate>20260923</procdate>
+      </procstep>
+    </lineage>
+  </dataqual>
+  <spdoinfo>
+    <direct>Raster</direct>
+    <rastinfo>
+      <rasttype>Grid Cell</rasttype>
+      <rowcount>3296</rowcount>
+      <colcount>4689</colcount>
+    </rastinfo>
+  </spdoinfo>
+  <spref>
+    <horizsys>
+      <planar>
+        <mapproj>
+          <mapprojn>Albers_Conical_Equal_Area</mapprojn>
+          <albers>
+            <stdparll>29.5</stdparll>
+            <stdparll>45.5</stdparll>
+            <longcm>-96.0</longcm>
+            <latprjo>23.0</latprjo>
+            <feast>0.0</feast>
+            <fnorth>0.0</fnorth>
+          </albers>
+        </mapproj>
+        <planci>
+          <plance>coordinate pair</plance>
+          <coordrep>
+            <absres>1000</absres>
+            <ordres>1000</ordres>
+          </coordrep>
+          <plandu>meters</plandu>
+        </planci>
+      </planar>
+      <geodetic>
+        <horizdn>North American Datum of 1983</horizdn>
+        <ellips>Geographic Reference System 80</ellips>
+        <semiaxis>6378137.0</semiaxis>
+        <denflat>298.257222101</denflat>
+      </geodetic>
+    </horizsys>
+  </spref>
+  <eainfo>
+    <detailed>
+      <enttyp>
+        <enttypl>irr_huc12_&lt;year&gt;.tif</enttypl>
+        <enttypd>Gridded estimate of irrigation water use for &lt;year&gt; (2000-2020), spatially disaggregated to a 1000-meter grid.</enttypd>
+        <enttypds>USGS Derived</enttypds>
+      </enttyp>
+      <attr>
+        <attrlabl>Value</attrlabl>
+        <attrdef>Estimated irrigation water use per grid cell.</attrdef>
+        <attrdefs>Producer defined</attrdefs>
+        <attrdomv>
+          <rdom>
+            <rdommin>0.0000</rdommin>
+            <rdommax>8.3273</rdommax>
+          </rdom>
+        </attrdomv>
+      </attr>
+    </detailed>
+    <detailed>
+      <enttyp>
+        <enttypl>pws-cu_huc12_&lt;year&gt;.tif</enttypl>
+        <enttypd>Gridded estimate of public-supply consumptive water use for &lt;year&gt; (2009-2020), spatially disaggregated to a 1000-meter grid.</enttypd>
+        <enttypds>USGS Derived</enttypds>
+      </enttyp>
+      <attr>
+        <attrlabl>Value</attrlabl>
+        <attrdef>Estimated public-supply consumptive water use per grid cell.</attrdef>
+        <attrdefs>Producer defined</attrdefs>
+        <attrdomv>
+          <rdom>
+            <rdommin>0.0000</rdommin>
+            <rdommax>1.9243</rdommax>
+          </rdom>
+        </attrdomv>
+      </attr>
+    </detailed>
+    <detailed>
+      <enttyp>
+        <enttypl>pws-gw_huc12_&lt;year&gt;.tif</enttypl>
+        <enttypd>Gridded estimate of public-supply groundwater withdrawals for &lt;year&gt; (2000-2020), spatially disaggregated to a 1000-meter grid.</enttypd>
+        <enttypds>USGS Derived</enttypds>
+      </enttyp>
+      <attr>
+        <attrlabl>Value</attrlabl>
+        <attrdef>Estimated public-supply groundwater withdrawals per grid cell.</attrdef>
+        <attrdefs>Producer defined</attrdefs>
+        <attrdomv>
+          <rdom>
+            <rdommin>0.0000</rdommin>
+            <rdommax>7.4214</rdommax>
+          </rdom>
+        </attrdomv>
+      </attr>
+    </detailed>
+    <detailed>
+      <enttyp>
+        <enttypl>pws-sw_huc12_&lt;year&gt;.tif</enttypl>
+        <enttypd>Gridded estimate of public-supply surface-water withdrawals for &lt;year&gt; (2000-2020), spatially disaggregated to a 1000-meter grid.</enttypd>
+        <enttypds>USGS Derived</enttypds>
+      </enttyp>
+      <attr>
+        <attrlabl>Value</attrlabl>
+        <attrdef>Estimated public-supply surface-water withdrawals per grid cell.</attrdef>
+        <attrdefs>Producer defined</attrdefs>
+        <attrdomv>
+          <rdom>
+            <rdommin>0.0000</rdommin>
+            <rdommax>12.0113</rdommax>
+          </rdom>
+        </attrdomv>
+      </attr>
+    </detailed>
+    <detailed>
+      <enttyp>
+        <enttypl>pws-tot_huc12_&lt;year&gt;.tif</enttypl>
+        <enttypd>Gridded estimate of total public-supply water withdrawals for &lt;year&gt; (2000-2020), spatially disaggregated to a 1000-meter grid.</enttypd>
+        <enttypds>USGS Derived</enttypds>
+      </enttyp>
+      <attr>
+        <attrlabl>Value</attrlabl>
+        <attrdef>Estimated total public-supply water withdrawals per grid cell.</attrdef>
+        <attrdefs>Producer defined</attrdefs>
+        <attrdomv>
+          <rdom>
+            <rdommin>0.0000</rdommin>
+            <rdommax>10.0963</rdommax>
+          </rdom>
+        </attrdomv>
+      </attr>
+    </detailed>
+    <detailed>
+      <enttyp>
+        <enttypl>&lt;year&gt;-&lt;month&gt;-consumption.tif</enttypl>
+        <enttypd>Gridded estimate of thermoelectric power plant water consumption for &lt;month&gt; (01-12) of &lt;year&gt; (2008-2020), spatially disaggregated to a 1000-meter grid using plant-footprint proportional allocation.</enttypd>
+        <enttypds>USGS Derived</enttypds>
+      </enttyp>
+      <attr>
+        <attrlabl>Value</attrlabl>
+        <attrdef>Estimated thermoelectric power plant water consumption per grid cell.</attrdef>
+        <attrdefs>Producer defined</attrdefs>
+        <attrdomv>
+          <rdom>
+            <rdommin>0.0000</rdommin>
+            <rdommax>52.5083</rdommax>
+          </rdom>
+        </attrdomv>
+      </attr>
+    </detailed>
+    <detailed>
+      <enttyp>
+        <enttypl>&lt;year&gt;-&lt;month&gt;-withdrawal.tif</enttypl>
+        <enttypd>Gridded estimate of thermoelectric power plant water withdrawal for &lt;month&gt; (01-12) of &lt;year&gt; (2008-2020), spatially disaggregated to a 1000-meter grid using plant-footprint proportional allocation.</enttypd>
+        <enttypds>USGS Derived</enttypds>
+      </enttyp>
+      <attr>
+        <attrlabl>Value</attrlabl>
+        <attrdef>Estimated thermoelectric power plant water withdrawal per grid cell.</attrdef>
+        <attrdefs>Producer defined</attrdefs>
+        <attrdomv>
+          <rdom>
+            <rdommin>0.0000</rdommin>
+            <rdommax>2313.5761</rdommax>
+          </rdom>
+        </attrdomv>
+      </attr>
+    </detailed>
+    <detailed>
+      <enttyp>
+        <enttypl>&lt;year&gt;-annual-consumption.tif</enttypl>
+        <enttypd>Gridded estimate of annual thermoelectric power plant water consumption for &lt;year&gt; (2008-2020), the day-weighted mean of the 12 corresponding monthly rasters.</enttypd>
+        <enttypds>USGS Derived</enttypds>
+      </enttyp>
+      <attr>
+        <attrlabl>Value</attrlabl>
+        <attrdef>Estimated annual thermoelectric power plant water consumption per grid cell.</attrdef>
+        <attrdefs>Producer defined</attrdefs>
+        <attrdomv>
+          <rdom>
+            <rdommin>0.0000</rdommin>
+            <rdommax>33.2628</rdommax>
+          </rdom>
+        </attrdomv>
+      </attr>
+    </detailed>
+    <detailed>
+      <enttyp>
+        <enttypl>&lt;year&gt;-annual-withdrawal.tif</enttypl>
+        <enttypd>Gridded estimate of annual thermoelectric power plant water withdrawal for &lt;year&gt; (2008-2020), the day-weighted mean of the 12 corresponding monthly rasters.</enttypd>
+        <enttypds>USGS Derived</enttypds>
+      </enttyp>
+      <attr>
+        <attrlabl>Value</attrlabl>
+        <attrdef>Estimated annual thermoelectric power plant water withdrawal per grid cell.</attrdef>
+        <attrdefs>Producer defined</attrdefs>
+        <attrdomv>
+          <rdom>
+            <rdommin>0.0000</rdommin>
+            <rdommax>2137.4491</rdommax>
+          </rdom>
+        </attrdomv>
+      </attr>
+    </detailed>
+    <overview>
+      <eaover>Units for all layers are million gallons per day (MGD) per 1000-meter grid cell. NaN is the nodata value. In the te rasters, NaN marks the cells outside the conterminous United States land area. All other te cells have a value, which is 0 where no plant footprint intersects the cell. In the irr, pws-cu, pws-gw, pws-sw, and pws-tot rasters, NaN marks the cells with no estimate. Many land cells are NaN. A cell is NaN if it is outside all HUCs. A cell is also NaN if it is outside the case-study mask (the public water-supply service areas, or for irr the HUCs with nonzero reported use). A cell is also NaN if the first ancillary layer has no data at the cell. All cells of a HUC are NaN if the HUC has no statistics or if its first-layer weights sum to 0. A value of 0 is an estimate of no water use. For irr, the cells with no NLCD cultivated/planted land are 0, unless a rule above makes them NaN. See data_dictionary.csv for the machine-readable version of this table.</eaover>
+      <eadetcit>n/a</eadetcit>
+    </overview>
+  </eainfo>
+  <distinfo>
+    <distrib>
+      <cntinfo>
+        <cntperp>
+          <cntper>U.S. Geological Survey ScienceBase</cntper>
+          <cntorg>U.S. Geological Survey ScienceBase</cntorg>
+        </cntperp>
+        <cntaddr>
+          <addrtype>mailing and physical</addrtype>
+          <address>Denver Federal Center, Building 810, Mail Stop 302</address>
+          <city>Denver</city>
+          <state>CO</state>
+          <postal>80225</postal>
+          <country>USA</country>
+        </cntaddr>
+        <cntvoice>1-888-275-8747</cntvoice>
+        <cntemail>sciencebase@usgs.gov</cntemail>
+      </cntinfo>
+    </distrib>
+    <distliab>Any use of trade, product or firm names is for descriptive purposes only and does not imply endorsement by the U.S. Geological Survey.
+Although this information product, for the most part, is in the public domain, it also contains copyrighted materials as noted in the text. Permission to reproduce copyrighted items for other than personal use must be secured from the copyright owner.
+This database has been approved for release and publication by the Director of the USGS. Although this database has been subjected to rigorous review and is substantially complete, the USGS reserves the right to revise the data pursuant to further analysis and review. Furthermore, it is released on condition that neither the USGS nor the United States Government may be held liable for any damages resulting from its authorized or unauthorized use.
+Although these data have been processed successfully on a computer system at the U.S. Geological Survey, no warranty expressed or implied is made regarding the display or utility of the data on any other system, or for general or scientific purposes, nor shall the act of distribution constitute any such warranty. The U.S. Geological Survey shall not be held liable for improper or incorrect use of the data described and/or contained herein.</distliab>
+    <stdorder>
+      <digform>
+        <digtinfo>
+          <formname>GeoTIFF (.tif)</formname>
+        </digtinfo>
+        <digtopt>
+          <onlinopt>
+            <computer>
+              <networka>
+                <networkr>TODO — DOI link</networkr>
+              </networka>
+            </computer>
+          </onlinopt>
+        </digtopt>
+      </digform>
+      <fees>None. No fees are applicable for obtaining the data set.</fees>
+    </stdorder>
+  </distinfo>
+  <metainfo>
+    <metd>20261106</metd>
+    <metc>
+      <cntinfo>
+        <cntperp>
+          <cntper>Benjamin Ruddell</cntper>
+          <cntorg>Northern Arizona University</cntorg>
+        </cntperp>
+        <cntpos>Professor</cntpos>
+        <cntaddr>
+          <addrtype>physical</addrtype>
+          <address>1100 S. Beaver St</address>
+          <city>Flagstaff</city>
+          <state>AZ</state>
+          <postal>86011</postal>
+          <country>US</country>
+        </cntaddr>
+        <cntvoice>n/a</cntvoice>
+        <cntemail>Benjamin.Ruddell@nau.edu</cntemail>
+      </cntinfo>
+    </metc>
+    <metstdn>FGDC Content Standard for Digital Geospatial Metadata</metstdn>
+    <metstdv>FGDC-STD-001-1998</metstdv>
+  </metainfo>
+</metadata>
